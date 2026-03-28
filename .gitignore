@@ -1,2 +1,5 @@
 /target
+# Compiled Forge binaries
 hello
+vec2
+*.o
