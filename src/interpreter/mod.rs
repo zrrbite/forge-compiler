@@ -372,6 +372,18 @@ impl Interpreter {
             ExprKind::BinaryOp { left, op, right } => {
                 let lhs = try_val!(self.eval_expr(left));
                 let rhs = try_val!(self.eval_expr(right));
+
+                // For struct types, try operator overloading first.
+                if let Value::Struct { name, .. } = &lhs {
+                    let method = op_method_name(*op);
+                    if let Some(type_methods) = self.methods.get(name.as_str()).cloned()
+                        && let Some(method_fn) = type_methods.get(method).cloned()
+                    {
+                        return self.call_function(&method_fn, vec![lhs, rhs]);
+                    }
+                }
+
+                // Primitive types: use built-in operators.
                 match eval_binop(&lhs, *op, &rhs) {
                     Ok(v) => Outcome::Val(v),
                     Err(msg) => Outcome::Error(msg),
@@ -964,5 +976,38 @@ fn eval_binop(lhs: &Value, op: BinOp, rhs: &Value) -> Result<Value, String> {
             lhs.type_name(),
             rhs.type_name()
         )),
+    }
+}
+
+/// Map a binary operator to its trait method name.
+fn op_method_name(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "add",
+        BinOp::Sub => "sub",
+        BinOp::Mul => "mul",
+        BinOp::Div => "div",
+        BinOp::Mod => "mod_",
+        BinOp::Eq | BinOp::NotEq => "eq",
+        BinOp::Lt => "lt",
+        BinOp::Gt => "gt",
+        BinOp::LtEq => "le",
+        BinOp::GtEq => "ge",
+        BinOp::And => "and",
+        BinOp::Or => "or",
+    }
+}
+
+/// Map a binary operator to its trait name.
+#[allow(dead_code)]
+fn op_trait_name(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "Add",
+        BinOp::Sub => "Sub",
+        BinOp::Mul => "Mul",
+        BinOp::Div => "Div",
+        BinOp::Mod => "Mod",
+        BinOp::Eq | BinOp::NotEq => "Eq",
+        BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => "Ord",
+        BinOp::And | BinOp::Or => "Logic",
     }
 }

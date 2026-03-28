@@ -894,6 +894,39 @@ impl TypeChecker {
 
     // ── Binary operators ────────────────────────────────────────────────
 
+    /// Map a binary operator to its trait name for overloading.
+    fn op_trait_name(op: BinOp) -> Option<&'static str> {
+        match op {
+            BinOp::Add => Some("Add"),
+            BinOp::Sub => Some("Sub"),
+            BinOp::Mul => Some("Mul"),
+            BinOp::Div => Some("Div"),
+            BinOp::Mod => Some("Mod"),
+            BinOp::Eq => Some("Eq"),
+            BinOp::NotEq => Some("Eq"),
+            BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => Some("Ord"),
+            BinOp::And | BinOp::Or => None,
+        }
+    }
+
+    /// Map a binary operator to the method name on its trait.
+    fn op_method_name(op: BinOp) -> &'static str {
+        match op {
+            BinOp::Add => "add",
+            BinOp::Sub => "sub",
+            BinOp::Mul => "mul",
+            BinOp::Div => "div",
+            BinOp::Mod => "mod",
+            BinOp::Eq | BinOp::NotEq => "eq",
+            BinOp::Lt => "lt",
+            BinOp::Gt => "gt",
+            BinOp::LtEq => "le",
+            BinOp::GtEq => "ge",
+            BinOp::And => "and",
+            BinOp::Or => "or",
+        }
+    }
+
     fn check_binop(&mut self, left: &Ty, op: BinOp, right: &Ty, span: Span) -> Ty {
         // Error propagation.
         if left.is_error() || right.is_error() {
@@ -907,21 +940,39 @@ impl TypeChecker {
         }
 
         match op {
-            // Arithmetic: both sides must be numeric, same type.
+            // Arithmetic: both sides must be numeric, same type — or operator overloaded.
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                 // String concatenation.
                 if op == BinOp::Add && *left == Ty::Str && *right == Ty::Str {
                     return Ty::Str;
                 }
 
-                if !left.is_numeric() {
-                    self.error(format!("Cannot apply {op:?} to {left}"), span);
-                    return Ty::Error;
+                // Primitive numeric types.
+                if left.is_numeric() {
+                    if let Err(msg) = self.unifier.unify(left, right) {
+                        self.error(format!("In {op:?}: {msg}"), span);
+                    }
+                    return left.clone();
                 }
-                if let Err(msg) = self.unifier.unify(left, right) {
-                    self.error(format!("In {op:?}: {msg}"), span);
+
+                // Operator overloading: look for impl Add/Sub/etc for this type.
+                if let Some(_trait_name) = Self::op_trait_name(op) {
+                    let type_name = match left {
+                        Ty::Named(name) => name.clone(),
+                        Ty::Struct { name, .. } => name.clone(),
+                        _ => {
+                            self.error(format!("Cannot apply {op:?} to {left}"), span);
+                            return Ty::Error;
+                        }
+                    };
+                    let method_name = Self::op_method_name(op);
+                    if let Some(info) = self.symbols.lookup_method(&type_name, method_name) {
+                        return info.ret.clone();
+                    }
                 }
-                left.clone()
+
+                self.error(format!("Cannot apply {op:?} to {left}"), span);
+                Ty::Error
             }
 
             // Comparison: numeric, returns bool.

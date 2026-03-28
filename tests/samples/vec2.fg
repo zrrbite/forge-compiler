@@ -16,7 +16,9 @@ impl Vec2 {
         let len = self.length()
         Vec2 { x: self.x / len, y: self.y / len }
     }
+}
 
+impl Add for Vec2 {
     fn add(self, other: Vec2) -> Vec2 {
         Vec2 { x: self.x + other.x, y: self.y + other.y }
     }
@@ -25,7 +27,7 @@ impl Vec2 {
 fn main() {
     let a = Vec2.new(3.0, 4.0)
     let b = Vec2.new(1.0, 2.0)
-    let c = a.add(b)
+    let c = a + b
 
     print("a = ({a.x}, {a.y})")
     print("b = ({b.x}, {b.y})")

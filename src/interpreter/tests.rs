@@ -491,6 +491,56 @@ fn main() {
     assert_eq!(out, vec!["5", "3", "4"]);
 }
 
+// ── Operator overloading ────────────────────────────────────────────────
+
+#[test]
+fn operator_overloading_add() {
+    let out = run_ok(
+        r#"struct Vec2 { x: f64, y: f64 }
+
+impl Vec2 {
+    fn new(x: f64, y: f64) -> Vec2 { Vec2 { x, y } }
+}
+
+impl Add for Vec2 {
+    fn add(self, other: Vec2) -> Vec2 {
+        Vec2 { x: self.x + other.x, y: self.y + other.y }
+    }
+}
+
+fn main() {
+    let a = Vec2.new(1.0, 2.0)
+    let b = Vec2.new(3.0, 4.0)
+    let c = a + b
+    print(c.x)
+    print(c.y)
+}"#,
+    );
+    assert_eq!(out, vec!["4", "6"]);
+}
+
+#[test]
+fn operator_overloading_sub() {
+    let out = run_ok(
+        r#"struct Point { x: f64, y: f64 }
+
+impl Sub for Point {
+    fn sub(self, other: Point) -> Point {
+        Point { x: self.x - other.x, y: self.y - other.y }
+    }
+}
+
+fn main() {
+    let a = Point { x: 10.0, y: 20.0 }
+    let b = Point { x: 3.0, y: 5.0 }
+    let c = a - b
+    print(c.x)
+    print(c.y)
+}"#,
+    );
+    assert_eq!(out, vec!["7", "15"]);
+}
+
 // ── Errors ──────────────────────────────────────────────────────────────
 
 #[test]
