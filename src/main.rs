@@ -1,7 +1,10 @@
 use std::env;
 use std::fs;
+use std::path::Path;
 use std::process;
 
+use forge::codegen;
+use forge::hir::lower::lower;
 use forge::interpreter::Interpreter;
 use forge::lexer::Lexer;
 use forge::parser::Parser;
@@ -11,20 +14,39 @@ fn main() {
 
     let mut dump_tokens = false;
     let mut dump_ast = false;
+    let mut dump_ir = false;
+    let mut compile = false;
+    let mut output = None;
     let mut filename = None;
 
-    for arg in &args[1..] {
-        match arg.as_str() {
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
             "--tokens" => dump_tokens = true,
             "--ast" => dump_ast = true,
-            _ => filename = Some(arg.as_str()),
+            "--ir" => dump_ir = true,
+            "--compile" | "-c" => compile = true,
+            "-o" => {
+                i += 1;
+                if i < args.len() {
+                    output = Some(args[i].clone());
+                }
+            }
+            _ => filename = Some(args[i].as_str()),
         }
+        i += 1;
     }
 
     let filename = match filename {
         Some(f) => f,
         None => {
-            eprintln!("Usage: forge [--tokens] [--ast] <file.fg>");
+            eprintln!("Usage: forge [options] <file.fg>");
+            eprintln!("Options:");
+            eprintln!("  --tokens     Dump token stream");
+            eprintln!("  --ast        Dump AST");
+            eprintln!("  --ir         Dump LLVM IR");
+            eprintln!("  --compile    Compile to native binary (default: interpret)");
+            eprintln!("  -o <file>    Output binary name (with --compile)");
             process::exit(1);
         }
     };
@@ -69,10 +91,41 @@ fn main() {
         return;
     }
 
-    // Run
-    let mut interp = Interpreter::new();
-    if let Err(e) = interp.run(&program) {
-        eprintln!("{e}");
-        process::exit(1);
+    // Compile or interpret
+    if compile || dump_ir {
+        let hir = lower(&program);
+
+        if dump_ir {
+            let context = inkwell::context::Context::create();
+            let mut cg = forge::codegen::Codegen::new(&context, "forge");
+            if let Err(e) = cg.compile_program(&hir) {
+                eprintln!("{e}");
+                process::exit(1);
+            }
+            println!("{}", cg.get_ir());
+            return;
+        }
+
+        let output_path = output.map(|s| s.to_string()).unwrap_or_else(|| {
+            Path::new(filename)
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        });
+
+        if let Err(e) = codegen::compile_to_binary(&hir, Path::new(&output_path)) {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+
+        eprintln!("Compiled to {output_path}");
+    } else {
+        // Interpret
+        let mut interp = Interpreter::new();
+        if let Err(e) = interp.run(&program) {
+            eprintln!("{e}");
+            process::exit(1);
+        }
     }
 }
