@@ -317,6 +317,8 @@ impl Lowering {
                 body: self.lower_block(body),
             },
 
+            ast::ExprKind::Comptime(block) => HirExprKind::Comptime(self.lower_block(block)),
+
             ast::ExprKind::Closure { params, body } => HirExprKind::Closure {
                 params: params
                     .iter()

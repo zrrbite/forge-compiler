@@ -239,6 +239,10 @@ pub enum HirExprKind {
         body: HirBlock,
     },
 
+    // -- Compile-time --
+    /// A comptime block — evaluated at compile time, replaced with its result.
+    Comptime(HirBlock),
+
     // -- Closures --
     Closure {
         params: Vec<HirClosureParam>,

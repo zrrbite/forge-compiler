@@ -999,6 +999,16 @@ impl Parser {
             TokenKind::Match => self.parse_match_expr(start),
             TokenKind::For => self.parse_for_expr(start),
             TokenKind::While => self.parse_while_expr(start),
+            TokenKind::Comptime => {
+                self.advance();
+                self.skip_newlines();
+                let block = self.parse_block()?;
+                let end = block.span;
+                Some(Expr {
+                    kind: ExprKind::Comptime(block),
+                    span: Span::new(start.start, end.end),
+                })
+            }
             TokenKind::Pipe => self.parse_closure(start),
             TokenKind::Bang => {
                 self.advance();

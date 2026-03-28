@@ -609,6 +609,14 @@ impl TypeChecker {
                 self.check_expr(inner)
             }
 
+            HirExprKind::Comptime(block) => {
+                // Comptime blocks are type-checked like regular blocks.
+                self.symbols.push_scope();
+                let ty = self.check_block(block);
+                self.symbols.pop_scope();
+                ty
+            }
+
             HirExprKind::Range { start, end, .. } => {
                 if let Some(s) = start {
                     let ty = self.check_expr(s);

@@ -587,6 +587,11 @@ impl Interpreter {
                 }
                 Outcome::Val(Value::Unit)
             }
+
+            ExprKind::Comptime(block) => {
+                // In the interpreter, comptime blocks are just evaluated normally.
+                self.eval_block(block)
+            }
         }
     }
 

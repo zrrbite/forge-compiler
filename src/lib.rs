@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod borrowck;
 pub mod codegen;
+pub mod comptime;
 pub mod hir;
 pub mod interpreter;
 pub mod lexer;

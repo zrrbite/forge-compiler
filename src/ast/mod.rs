@@ -227,6 +227,8 @@ pub enum ExprKind {
     },
     /// While loop: `while cond { ... }`
     While { condition: Box<Expr>, body: Block },
+    /// Compile-time evaluation: `comptime { ... }`
+    Comptime(Block),
 }
 
 /// Part of an interpolated string.

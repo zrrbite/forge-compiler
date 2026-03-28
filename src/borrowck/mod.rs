@@ -490,6 +490,11 @@ impl BorrowChecker {
             HirExprKind::Turbofish { expr: inner, .. } => {
                 self.check_expr(inner);
             }
+            HirExprKind::Comptime(block) => {
+                self.push_scope();
+                self.check_block(block);
+                self.pop_scope();
+            }
             HirExprKind::Range { start, end, .. } => {
                 if let Some(s) = start {
                     self.check_expr(s);

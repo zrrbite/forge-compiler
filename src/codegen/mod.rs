@@ -572,6 +572,15 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(self.context.i64_type().const_int(0, false).into())
             }
 
+            HirExprKind::Comptime(block) => {
+                // Comptime blocks should be evaluated before codegen.
+                // If we get here, just compile the block normally.
+                self.push_scope();
+                let val = self.compile_block(block, function)?;
+                self.pop_scope();
+                Ok(val.unwrap_or_else(|| self.context.i64_type().const_int(0, false).into()))
+            }
+
             HirExprKind::Match {
                 expr: scrutinee,
                 arms,
