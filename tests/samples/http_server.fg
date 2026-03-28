@@ -1,0 +1,80 @@
+// http_server.fg — Full application example (PLACEHOLDER)
+//
+// Demonstrates the intended structure of a real Forge application
+// with HTTP routing, JSON handling, and database access.
+//
+// Planned dependencies (via `use`):
+//   use std.net.{HttpServer, Request, Response}
+//   use std.json
+//   use std.db.{Database, Query}
+//
+// Example of what will be possible:
+//
+//   struct User {
+//       id: i32,
+//       name: str,
+//       email: str,
+//   }
+//
+//   fn get_user(req: Request, db: Database) -> Response {
+//       let id = req.param("id").parse::<i32>()?
+//       let user = db.query("SELECT * FROM users WHERE id = ?", [id])?
+//       Response.json(user)
+//   }
+//
+//   fn create_user(req: Request, db: Database) -> Response {
+//       let body = req.json::<User>()?
+//       db.execute("INSERT INTO users (name, email) VALUES (?, ?)",
+//                  [body.name, body.email])?
+//       Response.created()
+//   }
+//
+//   fn main() {
+//       let db = Database.connect("postgres://localhost/app")?
+//       let server = HttpServer.new("0.0.0.0:8080")
+//
+//       server.get("/users/{id}", |req| get_user(req, db))
+//       server.post("/users", |req| create_user(req, db))
+//
+//       print("Listening on :8080")
+//       server.run()
+//   }
+//
+// Status: Requires stdlib (net, json, db), use/imports, and ? propagation.
+
+struct Route {
+    method: str,
+    path: str,
+}
+
+impl Route {
+    fn new(method: str, path: str) -> Route {
+        Route { method, path }
+    }
+
+    fn describe(self) -> str {
+        "{self.method} {self.path}"
+    }
+}
+
+fn main() {
+    print("http_server.fg: placeholder")
+    print("Full HTTP server requires stdlib and imports")
+    print("")
+
+    // Show the intended routing structure
+    print("=== Planned routes ===")
+    let r1 = Route.new("GET", "/users")
+    let r2 = Route.new("GET", "/users/:id")
+    let r3 = Route.new("POST", "/users")
+    let r4 = Route.new("PUT", "/users/:id")
+    let r5 = Route.new("DELETE", "/users/:id")
+    let routes = [r1, r2, r3, r4, r5]
+
+    for route in routes {
+        print("  {route.describe()}")
+    }
+
+    print("")
+    print("When stdlib lands, this will be a real HTTP server")
+}

@@ -1,0 +1,74 @@
+// iterators.fg — Iterator patterns using array built-in methods
+//
+// Demonstrates map, filter, fold, and each — the core functional
+// combinators. In full Forge these would be zero-cost iterator
+// chains via the Iterator trait. The interpreter provides them
+// as built-in array methods.
+
+fn sum(arr: [i32]) -> i32 {
+    arr.fold(0, |acc, x| acc + x)
+}
+
+fn product(arr: [i32]) -> i32 {
+    arr.fold(1, |acc, x| acc * x)
+}
+
+fn main() {
+    print("=== Map: transform each element ===")
+    let numbers = [1, 2, 3, 4, 5]
+    let doubled = numbers.map(|x| x * 2)
+    let squared = numbers.map(|x| x * x)
+    print("  numbers:  {numbers}")
+    print("  doubled:  {doubled}")
+    print("  squared:  {squared}")
+
+    print("=== Filter: keep matching elements ===")
+    let evens = numbers.filter(|x| x % 2 == 0)
+    let odds = numbers.filter(|x| x % 2 != 0)
+    let big = numbers.filter(|x| x > 3)
+    print("  evens:    {evens}")
+    print("  odds:     {odds}")
+    print("  > 3:      {big}")
+
+    print("=== Fold: reduce to a single value ===")
+    let total = sum(numbers)
+    let prod = product(numbers)
+    print("  sum:      {total}")
+    print("  product:  {prod}")
+
+    // Find max using fold
+    let max = numbers.fold(0, |best, x| if x > best { x } else { best })
+    print("  max:      {max}")
+
+    // Count matching elements using fold
+    let even_count = numbers.fold(0, |count, x| if x % 2 == 0 { count + 1 } else { count })
+    print("  # evens:  {even_count}")
+
+    print("=== Each: side effects per element ===")
+    print("  printing each:")
+    numbers.each(|x| print("    -> {x}"))
+
+    print("=== Chained operations ===")
+    // Filter then map then fold
+    let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    let result = data.filter(|x| x % 3 == 0).map(|x| x * x).fold(0, |a, b| a + b)
+    print("  sum of squares of multiples of 3 in 1..10:")
+    print("  3^2 + 6^2 + 9^2 = {result}")
+
+    print("=== Practical: word lengths ===")
+    // Simulate with numbers (no string arrays in interpreter yet)
+    let lengths = [5, 3, 7, 2, 4]
+    let long_words = lengths.filter(|l| l >= 5)
+    let total_chars = sum(lengths)
+    print("  word lengths: {lengths}")
+    print("  long words (>=5 chars): {long_words.len()} found")
+    print("  total characters: {total_chars}")
+
+    print("=== Building ranges and transforming ===")
+    let indices = 0..8
+    let values = indices.map(|i| i * i)
+    print("  i:    {indices}")
+    print("  i^2:  {values}")
+
+    print("Iterator patterns demo complete")
+}

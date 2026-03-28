@@ -1,0 +1,119 @@
+// traits.fg — Trait-like behavior via impl blocks
+//
+// Demonstrates the trait/impl pattern in Forge.
+// Trait definitions declare the interface; impl blocks provide
+// the concrete implementations per type.
+// Note: operator overloading (impl Add for X) doesn't dispatch
+// via + yet in the interpreter, so we call methods directly.
+
+struct Circle {
+    radius: f64,
+}
+
+struct Rectangle {
+    width: f64,
+    height: f64,
+}
+
+struct Triangle {
+    base: f64,
+    height: f64,
+}
+
+// Trait declaration (parsed but not enforced at runtime yet)
+trait Shape {
+    fn area(self) -> f64
+    fn name(self) -> str
+}
+
+impl Circle {
+    fn new(radius: f64) -> Circle {
+        Circle { radius }
+    }
+
+    fn area(self) -> f64 {
+        3.14159 * self.radius * self.radius
+    }
+
+    fn name(self) -> str {
+        "Circle"
+    }
+
+    fn circumference(self) -> f64 {
+        2.0 * 3.14159 * self.radius
+    }
+}
+
+impl Rectangle {
+    fn new(width: f64, height: f64) -> Rectangle {
+        Rectangle { width, height }
+    }
+
+    fn area(self) -> f64 {
+        self.width * self.height
+    }
+
+    fn name(self) -> str {
+        "Rectangle"
+    }
+
+    fn perimeter(self) -> f64 {
+        2.0 * (self.width + self.height)
+    }
+
+    fn is_square(self) -> bool {
+        self.width == self.height
+    }
+}
+
+impl Triangle {
+    fn new(base: f64, height: f64) -> Triangle {
+        Triangle { base, height }
+    }
+
+    fn area(self) -> f64 {
+        0.5 * self.base * self.height
+    }
+
+    fn name(self) -> str {
+        "Triangle"
+    }
+}
+
+// A function that works with any shape via duck typing
+// In full Forge this would be: fn describe(shape: impl Shape)
+fn describe_circle(shape: Circle) {
+    print("  {shape.name()}: area = {shape.area()}")
+}
+
+fn describe_rect(shape: Rectangle) {
+    print("  {shape.name()}: area = {shape.area()}")
+}
+
+fn describe_tri(shape: Triangle) {
+    print("  {shape.name()}: area = {shape.area()}")
+}
+
+fn main() {
+    print("=== Shapes ===")
+
+    let c = Circle.new(5.0)
+    describe_circle(c)
+    print("  circumference = {c.circumference()}")
+
+    let r = Rectangle.new(4.0, 6.0)
+    describe_rect(r)
+    print("  perimeter = {r.perimeter()}")
+    print("  is square? {r.is_square()}")
+
+    let sq = Rectangle.new(3.0, 3.0)
+    describe_rect(sq)
+    print("  is square? {sq.is_square()}")
+
+    let t = Triangle.new(8.0, 5.0)
+    describe_tri(t)
+
+    // Compute total area manually
+    let total = c.area() + r.area() + sq.area() + t.area()
+    print("=== Total area of all shapes: {total} ===")
+}

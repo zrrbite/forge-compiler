@@ -1,0 +1,109 @@
+// generics.fg — Generic-like patterns using concrete types
+//
+// In full Forge, Stack would be Stack<T> with monomorphized generics.
+// Since the interpreter erases type params, we demonstrate the pattern
+// using concrete i32 values. The API mirrors what Stack<T> would look like.
+
+struct Stack {
+    items: [i32],
+    size: i32,
+}
+
+impl Stack {
+    fn new() -> Stack {
+        Stack { items: [], size: 0 }
+    }
+
+    fn push(self, value: i32) -> Stack {
+        let items = self.items.push(value)
+        let size = self.size + 1
+        Stack { items, size }
+    }
+
+    fn pop(self) -> Stack {
+        // Return a new stack without the last element
+        // In real Forge this would return (Stack<T>, Option<T>)
+        if self.size == 0 {
+            self
+        } else {
+            let mut new_items: [i32] = []
+            for i in 0..(self.size - 1) {
+                new_items = new_items.push(self.items[i])
+            }
+            Stack { items: new_items, size: self.size - 1 }
+        }
+    }
+
+    fn peek(self) -> i32 {
+        // Returns top element (0 if empty — real Forge would return Option<T>)
+        if self.size == 0 {
+            0
+        } else {
+            self.items[self.size - 1]
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        self.size == 0
+    }
+
+    fn len(self) -> i32 {
+        self.size
+    }
+
+    fn to_array(self) -> [i32] {
+        self.items
+    }
+}
+
+fn main() {
+    print("=== Stack operations ===")
+
+    // Build up a stack
+    let mut s = Stack.new()
+    print("empty? {s.is_empty()}")
+
+    s = s.push(10)
+    s = s.push(20)
+    s = s.push(30)
+    print("after pushing 10, 20, 30:")
+    print("  size = {s.len()}")
+    print("  top  = {s.peek()}")
+    print("  contents = {s.to_array()}")
+
+    // Pop the top
+    s = s.pop()
+    print("after pop:")
+    print("  size = {s.len()}")
+    print("  top  = {s.peek()}")
+    print("  contents = {s.to_array()}")
+
+    // Push more
+    s = s.push(40)
+    s = s.push(50)
+    print("after pushing 40, 50:")
+    print("  contents = {s.to_array()}")
+
+    // Pop until empty
+    print("popping all:")
+    while !s.is_empty() {
+        print("  popped {s.peek()}")
+        s = s.pop()
+    }
+    print("empty? {s.is_empty()}")
+
+    // Demonstrate using stack for reverse
+    print("=== Reverse array using stack ===")
+    let original = [1, 2, 3, 4, 5]
+    let mut rev = Stack.new()
+    for x in original {
+        rev = rev.push(x)
+    }
+    let mut reversed: [i32] = []
+    while !rev.is_empty() {
+        reversed = reversed.push(rev.peek())
+        rev = rev.pop()
+    }
+    print("  original: {original}")
+    print("  reversed: {reversed}")
+}

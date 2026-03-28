@@ -1,0 +1,125 @@
+// errors.fg — Result/Option patterns in Forge
+//
+// Uses Variant values from array built-in methods (Some/None)
+// and match expressions for error handling.
+// The ? operator works on Ok/Err variants but we use match here
+// to show the patterns explicitly.
+
+fn find_first_even(numbers: [i32]) -> [i32] {
+    // Use filter to find evens, then check if any exist
+    numbers.filter(|x| x % 2 == 0)
+}
+
+fn safe_divide(a: i32, b: i32) -> [i32] {
+    // Simulate Result by returning a single-element array on success
+    // or an empty array on failure
+    if b == 0 {
+        print("  error: division by zero")
+        []
+    } else {
+        [a / b]
+    }
+}
+
+fn demo_option_from_array() {
+    print("=== Option from array operations ===")
+
+    let items = [10, 20, 30]
+
+    // .last() returns Some(value) or None
+    let last = items.last()
+    match last {
+        Some(val) => print("  last element: {val}"),
+        None => print("  array is empty"),
+    }
+
+    // .pop() returns Some(value) or None
+    let popped = items.pop()
+    match popped {
+        Some(val) => print("  popped: {val}"),
+        None => print("  nothing to pop"),
+    }
+
+    // Empty array case
+    let empty: [i32] = []
+    let result = empty.last()
+    match result {
+        Some(val) => print("  got: {val}"),
+        None => print("  empty array has no last element"),
+    }
+}
+
+fn demo_safe_operations() {
+    print("=== Safe operations with checks ===")
+
+    // Safe division
+    let result = safe_divide(10, 3)
+    if result.len() > 0 {
+        print("  10 / 3 = {result[0]}")
+    } else {
+        print("  division failed")
+    }
+
+    // Division by zero
+    let bad = safe_divide(10, 0)
+    if bad.len() > 0 {
+        print("  result = {bad[0]}")
+    } else {
+        print("  handled division error gracefully")
+    }
+}
+
+fn demo_validation() {
+    print("=== Input validation ===")
+
+    let ages = [25, -3, 17, 42, 0, 150, 30]
+
+    for age in ages {
+        if age < 0 {
+            print("  {age}: invalid (negative)")
+        } else {
+            if age == 0 {
+                print("  {age}: invalid (zero)")
+            } else {
+                if age > 120 {
+                    print("  {age}: invalid (too high)")
+                } else {
+                    if age < 18 {
+                        print("  {age}: minor")
+                    } else {
+                        print("  {age}: valid adult")
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn demo_chained_lookups() {
+    print("=== Chained lookups ===")
+
+    // Simulate a lookup chain: find even numbers, then check results
+    let data = [1, 3, 5, 7]
+    let evens = find_first_even(data)
+    if evens.len() > 0 {
+        print("  found even: {evens[0]}")
+    } else {
+        print("  no even numbers in [1, 3, 5, 7]")
+    }
+
+    let data2 = [1, 4, 6, 7]
+    let evens2 = find_first_even(data2)
+    if evens2.len() > 0 {
+        print("  found {evens2.len()} even number(s), first: {evens2[0]}")
+    } else {
+        print("  no even numbers found")
+    }
+}
+
+fn main() {
+    demo_option_from_array()
+    demo_safe_operations()
+    demo_validation()
+    demo_chained_lookups()
+    print("Error handling demo complete")
+}

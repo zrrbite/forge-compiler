@@ -1,0 +1,54 @@
+// concurrency.fg — Concurrency primitives (PLACEHOLDER)
+//
+// Forge provides compile-time data race prevention with explicit
+// sharing via .share() for cross-thread access.
+//
+// Planned features:
+//   - spawn { ... } to launch concurrent tasks
+//   - Atomic types for lock-free shared state
+//   - .share() to explicitly opt into shared ownership
+//   - Compile-time race detection (no data races possible)
+//   - Channels for message passing
+//
+// Example of what will be possible:
+//
+//   fn main() {
+//       let counter = Atomic.new(0)
+//       let shared = counter.share()
+//
+//       let handles = (0..4).map(|i| {
+//           let c = shared.clone()
+//           spawn {
+//               for j in 0..1000 {
+//                   c.add(1)
+//               }
+//               print("Thread {i} done")
+//           }
+//       })
+//
+//       for h in handles {
+//           h.join()
+//       }
+//       print("Final count: {shared.load()}")
+//       // Guaranteed to be 4000 — no data races
+//   }
+//
+// Status: Requires spawn and Atomic support in the runtime.
+
+fn main() {
+    print("concurrency.fg: placeholder")
+    print("Spawn and atomic operations are not yet implemented")
+    print("See comments in this file for planned features")
+
+    // Simulate sequential "work" to show the pattern
+    let mut total = 0
+    for thread_id in 0..4 {
+        let mut local_sum = 0
+        for j in 0..10 {
+            local_sum += 1
+        }
+        total += local_sum
+        print("Worker {thread_id} contributed {local_sum}")
+    }
+    print("Total (sequential): {total}")
+}

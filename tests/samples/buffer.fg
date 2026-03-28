@@ -1,0 +1,79 @@
+// buffer.fg — Ownership concepts in Forge
+//
+// Demonstrates the IDEA of move semantics and borrowing.
+// The current interpreter clones values (no real ownership tracking yet),
+// but this shows the intended patterns for when the borrow checker lands.
+
+struct Buffer {
+    data: [i32],
+    len: i32,
+}
+
+impl Buffer {
+    fn new() -> Buffer {
+        Buffer { data: [], len: 0 }
+    }
+
+    fn push(self, value: i32) -> Buffer {
+        let data = self.data.push(value)
+        let len = self.len + 1
+        Buffer { data, len }
+    }
+
+    fn get(self, index: i32) -> i32 {
+        self.data[index]
+    }
+
+    fn size(self) -> i32 {
+        self.len
+    }
+
+    fn sum(self) -> i32 {
+        self.data.fold(0, |acc, x| acc + x)
+    }
+}
+
+// In real Forge, this function would take ownership of the buffer.
+// The caller would no longer be able to use it after passing it here.
+fn consume_buffer(buf: Buffer) -> i32 {
+    print("  consuming buffer of size {buf.size()}")
+    buf.sum()
+}
+
+// In real Forge, this function borrows the buffer immutably.
+// The caller retains ownership and can use it after this call.
+fn inspect_buffer(buf: Buffer) -> i32 {
+    print("  inspecting buffer of size {buf.size()}")
+    buf.sum()
+}
+
+fn main() {
+    // Create a buffer and build it up
+    let mut buf = Buffer.new()
+    buf = buf.push(10)
+    buf = buf.push(20)
+    buf = buf.push(30)
+
+    print("Buffer contents:")
+    for i in 0..3 {
+        print("  buf[{i}] = {buf.get(i)}")
+    }
+
+    // Borrow: inspect without consuming (in real Forge, &buf)
+    print("Inspecting (borrow):")
+    let total = inspect_buffer(buf)
+    print("  total = {total}")
+
+    // After a borrow, the original is still usable
+    print("Buffer still usable: size = {buf.size()}")
+
+    // Move: transfer ownership (in real Forge, buf moves here)
+    print("Consuming (move):")
+    let final_sum = consume_buffer(buf)
+    print("  final sum = {final_sum}")
+
+    // In real Forge, using `buf` here would be a compile error:
+    //   error: use of moved value `buf`
+    // The borrow checker prevents use-after-move at compile time.
+    print("Ownership demo complete")
+}

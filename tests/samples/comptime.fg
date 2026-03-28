@@ -1,0 +1,52 @@
+// comptime.fg — Compile-time execution (PLACEHOLDER)
+//
+// Forge's comptime feature enables Zig-style compile-time execution.
+// This replaces macros, templates, and build scripts with real code
+// that runs during compilation.
+//
+// Planned features:
+//   - comptime { ... } blocks execute at compile time
+//   - comptime fn: functions that run during compilation
+//   - Compile-time validation: @compile_error("message")
+//   - Lookup tables generated at compile time
+//   - Type-level computation
+//
+// Example of what will be possible:
+//
+//   comptime fn fibonacci(n: i32) -> i32 {
+//       if n <= 1 { n }
+//       else { fibonacci(n - 1) + fibonacci(n - 2) }
+//   }
+//
+//   fn main() {
+//       // This value is computed at compile time, not runtime
+//       let fib10 = comptime { fibonacci(10) }
+//       print("fib(10) = {fib10}")
+//
+//       // Compile-time lookup table generation
+//       let squares = comptime {
+//           let mut table: [i32] = []
+//           for i in 0..16 {
+//               table = table.push(i * i)
+//           }
+//           table
+//       }
+//   }
+//
+// Status: Requires comptime support in the compiler pipeline.
+
+fn main() {
+    print("comptime.fg: placeholder")
+    print("Compile-time execution is not yet implemented")
+    print("See comments in this file for planned features")
+
+    // For now, demonstrate the equivalent at runtime
+    let mut fib_a = 0
+    let mut fib_b = 1
+    for i in 0..10 {
+        let temp = fib_b
+        fib_b = fib_a + fib_b
+        fib_a = temp
+    }
+    print("fib(10) = {fib_b} (computed at runtime for now)")
+}
