@@ -233,11 +233,23 @@ impl Interpreter {
             "max",
             "assert",
             "assert_eq",
+            // Result/Option constructors
+            "Ok",
+            "Err",
+            "Some",
         ];
         for name in builtins {
             self.env
                 .define(name.into(), Value::Function(FnValue::Builtin(name.into())));
         }
+        // None is a value, not a function.
+        self.env.define(
+            "None".into(),
+            Value::Variant {
+                name: "None".into(),
+                fields: vec![],
+            },
+        );
         // Math constants.
         self.env
             .define("PI".into(), Value::Float(std::f64::consts::PI));
@@ -539,10 +551,16 @@ impl Interpreter {
             ExprKind::Try(inner) => {
                 let val = try_val!(self.eval_expr(inner));
                 match &val {
+                    // Result: Ok(v) unwraps, Err(e) early-returns.
                     Value::Variant { name, fields } if name == "Ok" => {
                         Outcome::Val(fields.first().cloned().unwrap_or(Value::Unit))
                     }
                     Value::Variant { name, .. } if name == "Err" => Outcome::Return(val),
+                    // Option: Some(v) unwraps, None early-returns.
+                    Value::Variant { name, fields } if name == "Some" => {
+                        Outcome::Val(fields.first().cloned().unwrap_or(Value::Unit))
+                    }
+                    Value::Variant { name, .. } if name == "None" => Outcome::Return(val),
                     _ => Outcome::Val(val),
                 }
             }
@@ -1042,6 +1060,46 @@ impl Interpreter {
             (Value::Float(f), "round") => {
                 return Outcome::Val(Value::Float(f.round()));
             }
+            // ── Result/Option methods ────────────────────────────────
+            (Value::Variant { name, .. }, "is_ok") => {
+                return Outcome::Val(Value::Bool(name == "Ok"));
+            }
+            (Value::Variant { name, .. }, "is_err") => {
+                return Outcome::Val(Value::Bool(name == "Err"));
+            }
+            (Value::Variant { name, .. }, "is_some") => {
+                return Outcome::Val(Value::Bool(name == "Some"));
+            }
+            (Value::Variant { name, .. }, "is_none") => {
+                return Outcome::Val(Value::Bool(name == "None"));
+            }
+            (Value::Variant { name, fields }, "unwrap") => {
+                if (name == "Ok" || name == "Some") && !fields.is_empty() {
+                    return Outcome::Val(fields[0].clone());
+                }
+                return Outcome::Error(format!("Called unwrap() on {name}"));
+            }
+            (Value::Variant { name, fields }, "unwrap_or") => {
+                if (name == "Ok" || name == "Some") && !fields.is_empty() {
+                    return Outcome::Val(fields[0].clone());
+                }
+                if args.len() == 1 {
+                    return Outcome::Val(try_val!(self.eval_expr(&args[0])));
+                }
+                return Outcome::Val(Value::Unit);
+            }
+            (Value::Variant { name, fields }, "map") => {
+                if (name == "Ok" || name == "Some") && !fields.is_empty() && args.len() == 1 {
+                    let func = try_val!(self.eval_expr(&args[0]));
+                    let mapped = try_val!(self.call_value(&func, vec![fields[0].clone()]));
+                    return Outcome::Val(Value::Variant {
+                        name: name.clone(),
+                        fields: vec![mapped],
+                    });
+                }
+                // None/Err pass through unchanged.
+                return Outcome::Val(obj.clone());
+            }
             _ => {}
         }
 
@@ -1191,6 +1249,28 @@ impl Interpreter {
                 (Some(a), Some(b)) => Outcome::Error(format!("Assertion failed: {} != {}", a, b)),
                 _ => Outcome::Error("assert_eq requires two arguments".into()),
             },
+            // Result/Option constructors.
+            "Ok" => {
+                let val = args.into_iter().next().unwrap_or(Value::Unit);
+                Outcome::Val(Value::Variant {
+                    name: "Ok".into(),
+                    fields: vec![val],
+                })
+            }
+            "Err" => {
+                let val = args.into_iter().next().unwrap_or(Value::Unit);
+                Outcome::Val(Value::Variant {
+                    name: "Err".into(),
+                    fields: vec![val],
+                })
+            }
+            "Some" => {
+                let val = args.into_iter().next().unwrap_or(Value::Unit);
+                Outcome::Val(Value::Variant {
+                    name: "Some".into(),
+                    fields: vec![val],
+                })
+            }
             _ => Outcome::Val(Value::Unit),
         }
     }
