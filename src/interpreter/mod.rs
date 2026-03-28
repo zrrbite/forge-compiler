@@ -221,10 +221,28 @@ impl Interpreter {
     }
 
     fn register_builtins(&mut self) {
-        self.env.define(
-            "print".into(),
-            Value::Function(FnValue::Builtin("print".into())),
-        );
+        let builtins = [
+            "print",
+            "println",
+            "eprint",
+            "to_str",
+            "to_int",
+            "to_float",
+            "abs",
+            "min",
+            "max",
+            "assert",
+            "assert_eq",
+        ];
+        for name in builtins {
+            self.env
+                .define(name.into(), Value::Function(FnValue::Builtin(name.into())));
+        }
+        // Math constants.
+        self.env
+            .define("PI".into(), Value::Float(std::f64::consts::PI));
+        self.env
+            .define("E".into(), Value::Float(std::f64::consts::E));
     }
 
     pub fn get_output(&self) -> &[String] {
@@ -797,7 +815,7 @@ impl Interpreter {
 
     fn call_builtin(&mut self, name: &str, args: Vec<Value>) -> Outcome {
         match name {
-            "print" => {
+            "print" | "println" => {
                 let text: Vec<String> = args.iter().map(|v| v.to_string()).collect();
                 let line = text.join(" ");
                 if let Some(output) = &mut self.output {
@@ -807,6 +825,63 @@ impl Interpreter {
                 }
                 Outcome::Val(Value::Unit)
             }
+            "eprint" => {
+                let text: Vec<String> = args.iter().map(|v| v.to_string()).collect();
+                eprintln!("{}", text.join(" "));
+                Outcome::Val(Value::Unit)
+            }
+            "to_str" => {
+                let val = args.first().cloned().unwrap_or(Value::Unit);
+                Outcome::Val(Value::String(val.to_string()))
+            }
+            "to_int" => {
+                if let Some(Value::String(s)) = args.first() {
+                    match s.parse::<i128>() {
+                        Ok(n) => Outcome::Val(Value::Int(n)),
+                        Err(_) => Outcome::Error(format!("Cannot parse '{s}' as integer")),
+                    }
+                } else {
+                    Outcome::Error("to_int expects a string argument".into())
+                }
+            }
+            "to_float" => {
+                if let Some(Value::String(s)) = args.first() {
+                    match s.parse::<f64>() {
+                        Ok(f) => Outcome::Val(Value::Float(f)),
+                        Err(_) => Outcome::Error(format!("Cannot parse '{s}' as float")),
+                    }
+                } else {
+                    Outcome::Error("to_float expects a string argument".into())
+                }
+            }
+            "abs" => match args.first() {
+                Some(Value::Int(n)) => Outcome::Val(Value::Int(n.abs())),
+                Some(Value::Float(f)) => Outcome::Val(Value::Float(f.abs())),
+                _ => Outcome::Val(Value::Unit),
+            },
+            "min" => match (args.first(), args.get(1)) {
+                (Some(Value::Int(a)), Some(Value::Int(b))) => Outcome::Val(Value::Int(*a.min(b))),
+                (Some(Value::Float(a)), Some(Value::Float(b))) => {
+                    Outcome::Val(Value::Float(a.min(*b)))
+                }
+                _ => Outcome::Val(Value::Unit),
+            },
+            "max" => match (args.first(), args.get(1)) {
+                (Some(Value::Int(a)), Some(Value::Int(b))) => Outcome::Val(Value::Int(*a.max(b))),
+                (Some(Value::Float(a)), Some(Value::Float(b))) => {
+                    Outcome::Val(Value::Float(a.max(*b)))
+                }
+                _ => Outcome::Val(Value::Unit),
+            },
+            "assert" => match args.first() {
+                Some(val) if val.is_truthy() => Outcome::Val(Value::Unit),
+                _ => Outcome::Error("Assertion failed".into()),
+            },
+            "assert_eq" => match (args.first(), args.get(1)) {
+                (Some(a), Some(b)) if a.to_string() == b.to_string() => Outcome::Val(Value::Unit),
+                (Some(a), Some(b)) => Outcome::Error(format!("Assertion failed: {} != {}", a, b)),
+                _ => Outcome::Error("assert_eq requires two arguments".into()),
+            },
             _ => Outcome::Val(Value::Unit),
         }
     }
