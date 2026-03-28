@@ -50,7 +50,7 @@ fn run_forge(source: &str) -> String {
 #[test]
 fn ir_has_main() {
     let ir = compile_ir("fn main() {}");
-    assert!(ir.contains("define void @main()"));
+    assert!(ir.contains("define i32 @main()"));
 }
 
 #[test]
@@ -144,4 +144,92 @@ fn run_multiple_prints() {
 }"#,
     );
     assert_eq!(output, "1\n2\n3");
+}
+
+// ── Structs and methods ─────────────────────────────────────────────────
+
+#[test]
+fn run_struct_and_field_access() {
+    let output = run_forge(
+        r#"struct Point { x: f64, y: f64 }
+
+fn main() {
+    let p = Point { x: 3.0, y: 4.0 }
+    print(p.x)
+    print(p.y)
+}"#,
+    );
+    assert_eq!(output, "3\n4");
+}
+
+#[test]
+fn run_static_method() {
+    let output = run_forge(
+        r#"struct Vec2 { x: f64, y: f64 }
+
+impl Vec2 {
+    fn new(x: f64, y: f64) -> Vec2 {
+        Vec2 { x, y }
+    }
+}
+
+fn main() {
+    let v = Vec2.new(5.0, 12.0)
+    print(v.x)
+    print(v.y)
+}"#,
+    );
+    assert_eq!(output, "5\n12");
+}
+
+#[test]
+fn run_instance_method() {
+    let output = run_forge(
+        r#"struct Vec2 { x: f64, y: f64 }
+
+impl Vec2 {
+    fn new(x: f64, y: f64) -> Vec2 { Vec2 { x, y } }
+    fn length(self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+}
+
+fn main() {
+    let v = Vec2.new(3.0, 4.0)
+    print(v.length())
+}"#,
+    );
+    assert_eq!(output, "5");
+}
+
+// ── While loops ─────────────────────────────────────────────────────────
+
+#[test]
+fn run_while_loop() {
+    let output = run_forge(
+        r#"fn main() {
+    let mut i = 0
+    while i < 3 {
+        print(i)
+        i = i + 1
+    }
+}"#,
+    );
+    assert_eq!(output, "0\n1\n2");
+}
+
+// ── For loops ───────────────────────────────────────────────────────────
+
+#[test]
+fn run_for_loop() {
+    let output = run_forge(
+        r#"fn main() {
+    let mut sum = 0
+    for i in 0..5 {
+        sum = sum + i
+    }
+    print(sum)
+}"#,
+    );
+    assert_eq!(output, "10");
 }

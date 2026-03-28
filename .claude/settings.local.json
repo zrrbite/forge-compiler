@@ -15,7 +15,10 @@
       "Write",
       "Edit",
       "Glob",
-      "Grep"
+      "Grep",
+      "Bash(source:*)",
+      "Bash(cargo test:*)",
+      "Bash(llvm-config:*)"
     ]
   }
 }
