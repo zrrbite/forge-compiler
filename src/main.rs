@@ -2,17 +2,33 @@ use std::env;
 use std::fs;
 use std::process;
 
+use forge::interpreter::Interpreter;
 use forge::lexer::Lexer;
 use forge::parser::Parser;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: forge <file.fg>");
-        process::exit(1);
+
+    let mut dump_tokens = false;
+    let mut dump_ast = false;
+    let mut filename = None;
+
+    for arg in &args[1..] {
+        match arg.as_str() {
+            "--tokens" => dump_tokens = true,
+            "--ast" => dump_ast = true,
+            _ => filename = Some(arg.as_str()),
+        }
     }
 
-    let filename = &args[1];
+    let filename = match filename {
+        Some(f) => f,
+        None => {
+            eprintln!("Usage: forge [--tokens] [--ast] <file.fg>");
+            process::exit(1);
+        }
+    };
+
     let source = match fs::read_to_string(filename) {
         Ok(s) => s,
         Err(e) => {
@@ -30,6 +46,13 @@ fn main() {
         process::exit(1);
     }
 
+    if dump_tokens {
+        for tok in &tokens {
+            println!("{:?}", tok);
+        }
+        return;
+    }
+
     // Parse
     let (program, parse_errors) = Parser::new(tokens).parse();
     if !parse_errors.is_empty() {
@@ -39,8 +62,17 @@ fn main() {
         process::exit(1);
     }
 
-    // Dump AST
-    for item in &program.items {
-        println!("{:#?}", item);
+    if dump_ast {
+        for item in &program.items {
+            println!("{:#?}", item);
+        }
+        return;
+    }
+
+    // Run
+    let mut interp = Interpreter::new();
+    if let Err(e) = interp.run(&program) {
+        eprintln!("{e}");
+        process::exit(1);
     }
 }
