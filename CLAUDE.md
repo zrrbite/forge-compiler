@@ -5,17 +5,73 @@ A compiler for the **Forge** programming language, written in Rust.
 Forge is a systems language combining Rust's memory safety with C++'s zero-cost
 abstractions and clean, enjoyable syntax.
 
-## Building & Testing
+## Prerequisites
+
+Install the Rust toolchain via [rustup](https://rustup.rs/):
 
 ```bash
-cargo build                 # build the compiler
-cargo test                  # run all tests
-cargo test lexer            # run lexer tests only
-cargo test parser           # run parser tests only
-cargo run -- <file.fg>      # compile a .fg file
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
+Follow the prompts (defaults are fine), then restart your terminal or run:
+
+```bash
+source "$HOME/.cargo/env"
+```
+
+This gives you `cargo` (build tool + package manager), `rustc` (compiler),
+`rustfmt` (formatter), and `clippy` (linter).
+
+## Building
+
+```bash
+cargo build                 # debug build
+cargo build --release       # optimized release build
+```
+
+The binary is placed in `target/debug/forge` (or `target/release/forge`).
+
+## Running
+
+```bash
+cargo run -- <file.fg>      # build + run on a .fg file
+cargo run -- tests/samples/hello.fg   # try a sample
+```
+
+Or run the binary directly after building:
+
+```bash
+./target/debug/forge tests/samples/hello.fg
+```
+
+Currently outputs the token stream. Later stages (parser, type checking, codegen)
+will be added incrementally.
+
 File extension: `.fg`
+
+## Testing
+
+```bash
+cargo test                  # run all tests
+cargo test lexer            # run lexer tests only
+cargo test parser           # run parser tests only (future)
+```
+
+## Code Quality
+
+```bash
+cargo fmt                   # auto-format all Rust code
+cargo fmt -- --check        # check formatting without modifying
+cargo clippy                # run linter
+cargo clippy -- -D warnings # treat warnings as errors
+```
+
+## Git Hooks
+
+Pre-commit and pre-push hooks are set up in `.git/hooks/`:
+
+- **pre-commit**: checks formatting (`cargo fmt --check`) and runs tests (`cargo test`)
+- **pre-push**: formatting + tests + clippy (`cargo clippy -- -D warnings`)
 
 ## Project Structure
 
