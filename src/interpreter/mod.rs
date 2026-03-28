@@ -615,10 +615,88 @@ impl Interpreter {
 
     // ── Calls ───────────────────────────────────────────────────────────
 
+    /// Mutating array methods — the result should be written back to the variable.
+    const MUTATING_METHODS: &'static [&'static str] =
+        &["push", "pop", "insert", "remove", "clear", "set", "reverse"];
+
     fn eval_call(&mut self, callee: &Expr, args: &[Expr]) -> Outcome {
         // Method call: `obj.method(args)`
         if let ExprKind::FieldAccess { object, field } = &callee.kind {
             let obj = try_val!(self.eval_expr(object));
+
+            // For mutating array methods, perform mutation in-place.
+            if let Value::Array(items) = &obj
+                && Self::MUTATING_METHODS.contains(&field.as_str())
+                && let ExprKind::Identifier(var_name) = &object.kind
+            {
+                let mut items = items.clone();
+                let return_val = match field.as_str() {
+                    "push" => {
+                        for arg in args {
+                            items.push(try_val!(self.eval_expr(arg)));
+                        }
+                        Value::Unit
+                    }
+                    "pop" => match items.pop() {
+                        Some(v) => v,
+                        None => Value::Unit,
+                    },
+                    "insert" => {
+                        if args.len() == 2 {
+                            let idx = try_val!(self.eval_expr(&args[0]));
+                            let val = try_val!(self.eval_expr(&args[1]));
+                            if let Value::Int(i) = idx {
+                                let i = i as usize;
+                                if i <= items.len() {
+                                    items.insert(i, val);
+                                }
+                            }
+                        }
+                        Value::Unit
+                    }
+                    "remove" => {
+                        if args.len() == 1 {
+                            let idx = try_val!(self.eval_expr(&args[0]));
+                            if let Value::Int(i) = idx {
+                                let i = i as usize;
+                                if i < items.len() {
+                                    return {
+                                        let removed = items.remove(i);
+                                        let _ = self.env.set(var_name, Value::Array(items));
+                                        Outcome::Val(removed)
+                                    };
+                                }
+                            }
+                        }
+                        Value::Unit
+                    }
+                    "clear" => {
+                        items.clear();
+                        Value::Unit
+                    }
+                    "set" => {
+                        if args.len() == 2 {
+                            let idx = try_val!(self.eval_expr(&args[0]));
+                            let val = try_val!(self.eval_expr(&args[1]));
+                            if let Value::Int(i) = idx {
+                                let i = i as usize;
+                                if i < items.len() {
+                                    items[i] = val;
+                                }
+                            }
+                        }
+                        Value::Unit
+                    }
+                    "reverse" => {
+                        items.reverse();
+                        Value::Unit
+                    }
+                    _ => Value::Unit,
+                };
+                let _ = self.env.set(var_name, Value::Array(items));
+                return Outcome::Val(return_val);
+            }
+
             return self.eval_method_call(obj, field, args);
         }
 
@@ -655,6 +733,101 @@ impl Interpreter {
                         fields: vec![],
                     }),
                 };
+            }
+            (Value::Array(items), "insert") => {
+                if args.len() != 2 {
+                    return Outcome::Error("insert requires 2 arguments".into());
+                }
+                let idx = try_val!(self.eval_expr(&args[0]));
+                let val = try_val!(self.eval_expr(&args[1]));
+                let mut items = items.clone();
+                if let Value::Int(i) = idx {
+                    let i = i as usize;
+                    if i <= items.len() {
+                        items.insert(i, val);
+                    }
+                }
+                return Outcome::Val(Value::Array(items));
+            }
+            (Value::Array(items), "remove") => {
+                if args.len() != 1 {
+                    return Outcome::Error("remove requires 1 argument".into());
+                }
+                let idx = try_val!(self.eval_expr(&args[0]));
+                let mut items = items.clone();
+                if let Value::Int(i) = idx {
+                    let i = i as usize;
+                    if i < items.len() {
+                        let removed = items.remove(i);
+                        return Outcome::Val(removed);
+                    }
+                }
+                return Outcome::Error("remove: index out of bounds".into());
+            }
+            (Value::Array(items), "clear") => {
+                let _ = items;
+                return Outcome::Val(Value::Array(vec![]));
+            }
+            (Value::Array(items), "is_empty") => {
+                return Outcome::Val(Value::Bool(items.is_empty()));
+            }
+            (Value::Array(items), "contains") => {
+                if args.len() != 1 {
+                    return Outcome::Val(Value::Unit);
+                }
+                let val = try_val!(self.eval_expr(&args[0]));
+                let val_str = val.to_string();
+                let found = items.iter().any(|item| item.to_string() == val_str);
+                return Outcome::Val(Value::Bool(found));
+            }
+            (Value::Array(items), "reverse") => {
+                let mut items = items.clone();
+                items.reverse();
+                return Outcome::Val(Value::Array(items));
+            }
+            (Value::Array(items), "sorted") => {
+                let mut items = items.clone();
+                items.sort_by_key(|a| a.to_string());
+                return Outcome::Val(Value::Array(items));
+            }
+            (Value::Array(items), "join") => {
+                if args.len() != 1 {
+                    return Outcome::Error("join requires 1 argument".into());
+                }
+                let sep = try_val!(self.eval_expr(&args[0]));
+                if let Value::String(sep) = sep {
+                    let result: Vec<String> = items.iter().map(|v| v.to_string()).collect();
+                    return Outcome::Val(Value::String(result.join(&sep)));
+                }
+                return Outcome::Val(Value::Unit);
+            }
+            (Value::Array(items), "get") => {
+                if args.len() != 1 {
+                    return Outcome::Val(Value::Unit);
+                }
+                let idx = try_val!(self.eval_expr(&args[0]));
+                if let Value::Int(i) = idx {
+                    return match items.get(i as usize) {
+                        Some(v) => Outcome::Val(v.clone()),
+                        None => Outcome::Error("get: index out of bounds".into()),
+                    };
+                }
+                return Outcome::Val(Value::Unit);
+            }
+            (Value::Array(items), "set") => {
+                if args.len() != 2 {
+                    return Outcome::Error("set requires 2 arguments".into());
+                }
+                let idx = try_val!(self.eval_expr(&args[0]));
+                let val = try_val!(self.eval_expr(&args[1]));
+                let mut items = items.clone();
+                if let Value::Int(i) = idx {
+                    let i = i as usize;
+                    if i < items.len() {
+                        items[i] = val;
+                    }
+                }
+                return Outcome::Val(Value::Array(items));
             }
             (Value::Array(items), "last") => {
                 return match items.last() {
@@ -714,6 +887,7 @@ impl Interpreter {
                 }
                 return Outcome::Val(Value::Unit);
             }
+            // ── String methods ───────────────────────────────────────
             (Value::String(s), "len") => {
                 return Outcome::Val(Value::Int(s.len() as i128));
             }
@@ -730,8 +904,143 @@ impl Interpreter {
                 }
                 return Outcome::Val(Value::Unit);
             }
+            (Value::String(s), "byte_at") => {
+                if args.len() != 1 {
+                    return Outcome::Val(Value::Unit);
+                }
+                let idx = try_val!(self.eval_expr(&args[0]));
+                if let Value::Int(i) = idx {
+                    let i = i as usize;
+                    if i < s.len() {
+                        return Outcome::Val(Value::Int(s.as_bytes()[i] as i128));
+                    }
+                }
+                return Outcome::Error("byte_at: index out of bounds".into());
+            }
+            (Value::String(s), "char_at") => {
+                if args.len() != 1 {
+                    return Outcome::Val(Value::Unit);
+                }
+                let idx = try_val!(self.eval_expr(&args[0]));
+                if let Value::Int(i) = idx
+                    && let Some(ch) = s.chars().nth(i as usize)
+                {
+                    return Outcome::Val(Value::String(ch.to_string()));
+                }
+                return Outcome::Error("char_at: index out of bounds".into());
+            }
+            (Value::String(s), "substring") => {
+                if args.len() != 2 {
+                    return Outcome::Error("substring requires 2 arguments".into());
+                }
+                let start = try_val!(self.eval_expr(&args[0]));
+                let end = try_val!(self.eval_expr(&args[1]));
+                if let (Value::Int(s_idx), Value::Int(e_idx)) = (start, end) {
+                    let s_idx = s_idx as usize;
+                    let e_idx = e_idx as usize;
+                    if s_idx <= e_idx && e_idx <= s.len() {
+                        return Outcome::Val(Value::String(s[s_idx..e_idx].to_string()));
+                    }
+                }
+                return Outcome::Error("substring: invalid range".into());
+            }
+            (Value::String(s), "starts_with") => {
+                if args.len() != 1 {
+                    return Outcome::Val(Value::Unit);
+                }
+                let arg = try_val!(self.eval_expr(&args[0]));
+                if let Value::String(prefix) = arg {
+                    return Outcome::Val(Value::Bool(s.starts_with(&prefix)));
+                }
+                return Outcome::Val(Value::Unit);
+            }
+            (Value::String(s), "ends_with") => {
+                if args.len() != 1 {
+                    return Outcome::Val(Value::Unit);
+                }
+                let arg = try_val!(self.eval_expr(&args[0]));
+                if let Value::String(suffix) = arg {
+                    return Outcome::Val(Value::Bool(s.ends_with(&suffix)));
+                }
+                return Outcome::Val(Value::Unit);
+            }
+            (Value::String(s), "find") => {
+                if args.len() != 1 {
+                    return Outcome::Val(Value::Unit);
+                }
+                let arg = try_val!(self.eval_expr(&args[0]));
+                if let Value::String(needle) = arg {
+                    return match s.find(&needle) {
+                        Some(i) => Outcome::Val(Value::Int(i as i128)),
+                        None => Outcome::Val(Value::Int(-1)),
+                    };
+                }
+                return Outcome::Val(Value::Int(-1));
+            }
+            (Value::String(s), "split") => {
+                if args.len() != 1 {
+                    return Outcome::Val(Value::Unit);
+                }
+                let arg = try_val!(self.eval_expr(&args[0]));
+                if let Value::String(delim) = arg {
+                    let parts: Vec<Value> = s
+                        .split(&delim)
+                        .map(|p| Value::String(p.to_string()))
+                        .collect();
+                    return Outcome::Val(Value::Array(parts));
+                }
+                return Outcome::Val(Value::Unit);
+            }
+            (Value::String(s), "replace") => {
+                if args.len() != 2 {
+                    return Outcome::Error("replace requires 2 arguments".into());
+                }
+                let from = try_val!(self.eval_expr(&args[0]));
+                let to = try_val!(self.eval_expr(&args[1]));
+                if let (Value::String(f), Value::String(t)) = (from, to) {
+                    return Outcome::Val(Value::String(s.replace(&f, &t)));
+                }
+                return Outcome::Val(Value::Unit);
+            }
+            (Value::String(s), "to_upper") => {
+                return Outcome::Val(Value::String(s.to_uppercase()));
+            }
+            (Value::String(s), "to_lower") => {
+                return Outcome::Val(Value::String(s.to_lowercase()));
+            }
+            (Value::String(s), "is_empty") => {
+                return Outcome::Val(Value::Bool(s.is_empty()));
+            }
+            (Value::String(s), "is_digit") => {
+                return Outcome::Val(Value::Bool(
+                    s.len() == 1 && s.chars().next().unwrap().is_ascii_digit(),
+                ));
+            }
+            (Value::String(s), "is_alpha") => {
+                return Outcome::Val(Value::Bool(
+                    s.len() == 1 && s.chars().next().unwrap().is_alphabetic(),
+                ));
+            }
+            (Value::String(s), "is_whitespace") => {
+                return Outcome::Val(Value::Bool(
+                    s.len() == 1 && s.chars().next().unwrap().is_whitespace(),
+                ));
+            }
+            // ── Float methods ───────────────────────────────────────
             (Value::Float(f), "sqrt") => {
                 return Outcome::Val(Value::Float(f.sqrt()));
+            }
+            (Value::Float(f), "abs") => {
+                return Outcome::Val(Value::Float(f.abs()));
+            }
+            (Value::Float(f), "floor") => {
+                return Outcome::Val(Value::Float(f.floor()));
+            }
+            (Value::Float(f), "ceil") => {
+                return Outcome::Val(Value::Float(f.ceil()));
+            }
+            (Value::Float(f), "round") => {
+                return Outcome::Val(Value::Float(f.round()));
             }
             _ => {}
         }
