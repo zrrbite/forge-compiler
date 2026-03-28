@@ -1,0 +1,17 @@
+fn greet(name: str) -> str {
+    "Hello, {name}!"
+}
+
+fn main() {
+    let name = "Martin"
+    print(greet(name))
+
+    let x: i32 = 42
+    let pi = 3.14159
+    let active = true
+
+    let mut count = 0
+    count += 1
+
+    print("Count: {count}, x: {x}, active: {active}")
+}

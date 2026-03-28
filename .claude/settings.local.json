@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:claude.ai)",
+      "Bash(cargo init:*)",
+      "Read(//home/zrrbite/.cargo/**)",
+      "Read(//home/zrrbite/**)",
+      "Bash(curl:*)",
+      "Bash(source:*)"
+    ]
+  }
+}
