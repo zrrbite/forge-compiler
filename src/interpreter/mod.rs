@@ -338,7 +338,7 @@ impl Interpreter {
                     }
                 }
             }
-            ItemKind::Struct(_) | ItemKind::Enum(_) | ItemKind::Trait(_) => {}
+            ItemKind::Struct(_) | ItemKind::Enum(_) | ItemKind::Trait(_) | ItemKind::Use(_) => {}
         }
     }
 

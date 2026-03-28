@@ -6,5 +6,6 @@ pub mod hir;
 pub mod interpreter;
 pub mod lexer;
 pub mod parser;
+pub mod resolve;
 pub mod stdlib;
 pub mod typeck;

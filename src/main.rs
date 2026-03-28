@@ -76,9 +76,17 @@ fn main() {
     }
 
     // Parse
-    let (program, parse_errors) = Parser::new(tokens).parse();
+    let (mut program, parse_errors) = Parser::new(tokens).parse();
     if !parse_errors.is_empty() {
         for err in &parse_errors {
+            eprintln!("{err}");
+        }
+        process::exit(1);
+    }
+
+    // Resolve modules (use declarations).
+    if let Err(errors) = forge::resolve::resolve_modules(&mut program, Path::new(filename)) {
+        for err in &errors {
             eprintln!("{err}");
         }
         process::exit(1);

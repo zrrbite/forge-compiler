@@ -20,6 +20,15 @@ pub enum ItemKind {
     Enum(EnumDef),
     Impl(ImplBlock),
     Trait(TraitDef),
+    /// Use declaration: `use path.to.module`
+    Use(UsePath),
+}
+
+/// A use declaration: `use math` or `use utils.helpers`
+#[derive(Debug, Clone)]
+pub struct UsePath {
+    /// Path segments: ["math"] or ["utils", "helpers"]
+    pub segments: Vec<String>,
 }
 
 /// A function definition.

@@ -33,7 +33,12 @@ impl Lowering {
 
     pub fn lower_program(&mut self, program: &ast::Program) -> HirProgram {
         HirProgram {
-            items: program.items.iter().map(|i| self.lower_item(i)).collect(),
+            items: program
+                .items
+                .iter()
+                .filter(|i| !matches!(&i.kind, ast::ItemKind::Use(_)))
+                .map(|i| self.lower_item(i))
+                .collect(),
         }
     }
 
@@ -45,6 +50,7 @@ impl Lowering {
             ast::ItemKind::Enum(e) => HirItemKind::Enum(self.lower_enum(e)),
             ast::ItemKind::Impl(i) => HirItemKind::Impl(self.lower_impl(i)),
             ast::ItemKind::Trait(t) => HirItemKind::Trait(self.lower_trait(t)),
+            ast::ItemKind::Use(_) => unreachable!("Use items should be resolved before lowering"),
         };
         HirItem {
             id,

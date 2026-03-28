@@ -161,14 +161,32 @@ impl Parser {
             TokenKind::Enum => self.parse_enum_item(start),
             TokenKind::Impl => self.parse_impl_item(start),
             TokenKind::Trait => self.parse_trait_item(start),
+            TokenKind::Use => self.parse_use_item(start),
             _ => {
                 self.error(format!(
-                    "Expected item (fn, struct, enum, impl, trait), found {:?}",
+                    "Expected item (fn, struct, enum, impl, trait, use), found {:?}",
                     self.peek_kind()
                 ));
                 None
             }
         }
+    }
+
+    fn parse_use_item(&mut self, start: Span) -> Option<Item> {
+        self.expect(&TokenKind::Use)?;
+        let mut segments = Vec::new();
+        let (first, _) = self.expect_identifier()?;
+        segments.push(first);
+        while self.eat(&TokenKind::Dot) {
+            let (seg, _) = self.expect_identifier()?;
+            segments.push(seg);
+        }
+        let end = self.tokens[self.pos - 1].span;
+        self.eat_newline_or_eof();
+        Some(Item {
+            kind: ItemKind::Use(UsePath { segments }),
+            span: Span::new(start.start, end.end),
+        })
     }
 
     fn parse_fn_item(&mut self, start: Span) -> Option<Item> {
