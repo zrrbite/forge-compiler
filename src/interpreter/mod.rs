@@ -23,6 +23,8 @@ pub enum Value {
         name: String,
         fields: Vec<Value>,
     },
+    /// A hash map (dictionary).
+    Map(Vec<(Value, Value)>),
     Function(FnValue),
     Unit,
 }
@@ -35,6 +37,7 @@ impl Value {
             Value::Bool(_) => "bool",
             Value::String(_) => "str",
             Value::Array(_) => "array",
+            Value::Map(_) => "map",
             Value::Struct { name, .. } => name,
             Value::Variant { name, .. } => name,
             Value::Function(_) => "fn",
@@ -92,6 +95,16 @@ impl fmt::Display for Value {
                     }
                     write!(f, ")")
                 }
+            }
+            Value::Map(entries) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, "}}")
             }
             Value::Function(_) => write!(f, "<fn>"),
             Value::Unit => write!(f, "()"),
@@ -250,6 +263,24 @@ impl Interpreter {
                 fields: vec![],
             },
         );
+        // HashMap constructor.
+        self.env.define(
+            "HashMap".into(),
+            Value::Function(FnValue::Builtin("HashMap".into())),
+        );
+        // File namespace (for File.read, File.write, File.exists).
+        self.env.define(
+            "File".into(),
+            Value::Variant {
+                name: "File".into(),
+                fields: vec![],
+            },
+        );
+        // Process builtins.
+        for name in ["args", "exit"] {
+            self.env
+                .define(name.into(), Value::Function(FnValue::Builtin(name.into())));
+        }
         // Math constants.
         self.env
             .define("PI".into(), Value::Float(std::f64::consts::PI));
@@ -715,6 +746,44 @@ impl Interpreter {
                 return Outcome::Val(return_val);
             }
 
+            // Mutating map methods.
+            if let Value::Map(entries) = &obj {
+                let mutating_map = ["insert", "remove"];
+                if mutating_map.contains(&field.as_str())
+                    && let ExprKind::Identifier(var_name) = &object.kind
+                {
+                    let mut entries = entries.clone();
+                    let return_val = match field.as_str() {
+                        "insert" => {
+                            if args.len() == 2 {
+                                let key = try_val!(self.eval_expr(&args[0]));
+                                let val = try_val!(self.eval_expr(&args[1]));
+                                let key_str = key.to_string();
+                                if let Some(entry) =
+                                    entries.iter_mut().find(|(k, _)| k.to_string() == key_str)
+                                {
+                                    entry.1 = val;
+                                } else {
+                                    entries.push((key, val));
+                                }
+                            }
+                            Value::Unit
+                        }
+                        "remove" => {
+                            if args.len() == 1 {
+                                let key = try_val!(self.eval_expr(&args[0]));
+                                let key_str = key.to_string();
+                                entries.retain(|(k, _)| k.to_string() != key_str);
+                            }
+                            Value::Unit
+                        }
+                        _ => Value::Unit,
+                    };
+                    let _ = self.env.set(var_name, Value::Map(entries));
+                    return Outcome::Val(return_val);
+                }
+            }
+
             return self.eval_method_call(obj, field, args);
         }
 
@@ -1100,6 +1169,131 @@ impl Interpreter {
                 // None/Err pass through unchanged.
                 return Outcome::Val(obj.clone());
             }
+            // ── File methods (static) ────────────────────────────────
+            (Value::Variant { name: vname, .. }, "read") if vname == "File" => {
+                if args.len() != 1 {
+                    return Outcome::Error("File.read requires 1 argument".into());
+                }
+                let path = try_val!(self.eval_expr(&args[0]));
+                if let Value::String(path) = path {
+                    match std::fs::read_to_string(&path) {
+                        Ok(content) => {
+                            return Outcome::Val(Value::Variant {
+                                name: "Ok".into(),
+                                fields: vec![Value::String(content)],
+                            });
+                        }
+                        Err(e) => {
+                            return Outcome::Val(Value::Variant {
+                                name: "Err".into(),
+                                fields: vec![Value::String(e.to_string())],
+                            });
+                        }
+                    }
+                }
+                return Outcome::Error("File.read: path must be a string".into());
+            }
+            (Value::Variant { name: vname, .. }, "write") if vname == "File" => {
+                if args.len() != 2 {
+                    return Outcome::Error("File.write requires 2 arguments".into());
+                }
+                let path = try_val!(self.eval_expr(&args[0]));
+                let content = try_val!(self.eval_expr(&args[1]));
+                if let (Value::String(path), Value::String(content)) = (path, content) {
+                    match std::fs::write(&path, &content) {
+                        Ok(()) => {
+                            return Outcome::Val(Value::Variant {
+                                name: "Ok".into(),
+                                fields: vec![Value::Unit],
+                            });
+                        }
+                        Err(e) => {
+                            return Outcome::Val(Value::Variant {
+                                name: "Err".into(),
+                                fields: vec![Value::String(e.to_string())],
+                            });
+                        }
+                    }
+                }
+                return Outcome::Error("File.write: path and content must be strings".into());
+            }
+            (Value::Variant { name: vname, .. }, "exists") if vname == "File" => {
+                if args.len() != 1 {
+                    return Outcome::Error("File.exists requires 1 argument".into());
+                }
+                let path = try_val!(self.eval_expr(&args[0]));
+                if let Value::String(path) = path {
+                    return Outcome::Val(Value::Bool(std::path::Path::new(&path).exists()));
+                }
+                return Outcome::Val(Value::Bool(false));
+            }
+            // ── HashMap methods ──────────────────────────────────────
+            (Value::Map(entries), "insert") => {
+                if args.len() != 2 {
+                    return Outcome::Error("insert requires 2 arguments".into());
+                }
+                let key = try_val!(self.eval_expr(&args[0]));
+                let val = try_val!(self.eval_expr(&args[1]));
+                let mut entries = entries.clone();
+                // Update existing or append.
+                let key_str = key.to_string();
+                if let Some(entry) = entries.iter_mut().find(|(k, _)| k.to_string() == key_str) {
+                    entry.1 = val;
+                } else {
+                    entries.push((key, val));
+                }
+                return Outcome::Val(Value::Map(entries));
+            }
+            (Value::Map(entries), "get") => {
+                if args.len() != 1 {
+                    return Outcome::Val(Value::Unit);
+                }
+                let key = try_val!(self.eval_expr(&args[0]));
+                let key_str = key.to_string();
+                return match entries.iter().find(|(k, _)| k.to_string() == key_str) {
+                    Some((_, v)) => Outcome::Val(Value::Variant {
+                        name: "Some".into(),
+                        fields: vec![v.clone()],
+                    }),
+                    None => Outcome::Val(Value::Variant {
+                        name: "None".into(),
+                        fields: vec![],
+                    }),
+                };
+            }
+            (Value::Map(entries), "contains_key") => {
+                if args.len() != 1 {
+                    return Outcome::Val(Value::Unit);
+                }
+                let key = try_val!(self.eval_expr(&args[0]));
+                let key_str = key.to_string();
+                let found = entries.iter().any(|(k, _)| k.to_string() == key_str);
+                return Outcome::Val(Value::Bool(found));
+            }
+            (Value::Map(entries), "remove") => {
+                if args.len() != 1 {
+                    return Outcome::Val(Value::Unit);
+                }
+                let key = try_val!(self.eval_expr(&args[0]));
+                let key_str = key.to_string();
+                let mut entries = entries.clone();
+                entries.retain(|(k, _)| k.to_string() != key_str);
+                return Outcome::Val(Value::Map(entries));
+            }
+            (Value::Map(entries), "len") => {
+                return Outcome::Val(Value::Int(entries.len() as i128));
+            }
+            (Value::Map(entries), "is_empty") => {
+                return Outcome::Val(Value::Bool(entries.is_empty()));
+            }
+            (Value::Map(entries), "keys") => {
+                let keys: Vec<Value> = entries.iter().map(|(k, _)| k.clone()).collect();
+                return Outcome::Val(Value::Array(keys));
+            }
+            (Value::Map(entries), "values") => {
+                let vals: Vec<Value> = entries.iter().map(|(_, v)| v.clone()).collect();
+                return Outcome::Val(Value::Array(vals));
+            }
             _ => {}
         }
 
@@ -1270,6 +1464,18 @@ impl Interpreter {
                     name: "Some".into(),
                     fields: vec![val],
                 })
+            }
+            "HashMap" => Outcome::Val(Value::Map(vec![])),
+            "args" => {
+                let args_vec: Vec<Value> = std::env::args().map(Value::String).collect();
+                Outcome::Val(Value::Array(args_vec))
+            }
+            "exit" => {
+                let code = match args.first() {
+                    Some(Value::Int(n)) => *n as i32,
+                    _ => 0,
+                };
+                std::process::exit(code);
             }
             _ => Outcome::Val(Value::Unit),
         }
