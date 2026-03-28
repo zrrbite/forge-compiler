@@ -4,82 +4,56 @@
 
 ```
 Source (.fg)
-  → Lexer      → Tokens                    ✅ done
-  → Parser     → AST                       ✅ done
-  → Interpreter (tree-walk)                 ✅ done (development aid)
-  → Lowering   → HIR (desugared)           ✅ done
-  → Type Check                             ✅ done (inference + unification)
-  → Codegen    → LLVM IR → Native binary   ✅ done (basic subset)
-  → Borrow Check                           ⬜ not started
-  → MIR (Mid-level IR)                     ⬜ not started
+  → Module resolver (use declarations)      ✅ done
+  → Lexer      → Tokens                     ✅ done
+  → Parser     → AST                        ✅ done
+  → Interpreter (tree-walk)                  ✅ done
+  → Lowering   → HIR (desugared)            ✅ done
+  → Type Check                              ✅ done
+  → Borrow Check                            ✅ done
+  → Comptime evaluation                     ✅ done
+  → Codegen    → LLVM IR → Native binary    ✅ done (structs, methods, loops)
 ```
 
-The compiler can interpret any Forge program via the tree-walk interpreter,
-and can compile a subset (functions, arithmetic, if/else, strings) to native
-binaries via LLVM.
+## Self-hosting roadmap
 
-## Open issues
+The goal is to rewrite the Forge compiler in Forge itself. Progress:
 
-| # | Issue | Status |
-|---|-------|--------|
-| #1 | Self-hosting: rewrite compiler in Forge | Long-term |
-| #4 | Borrow checker: ownership verification | Not started |
-| #6 | Standard library: core types and functions | Not started |
-| #7 | Operator overloading via trait impls | Not started |
-| #8 | comptime: compile-time execution | Not started |
-
-## Possible next steps
-
-### 1. Expand codegen to cover more of the language
-
-The LLVM backend currently handles functions, integers, floats, strings,
-arithmetic, and if/else. Adding support for:
-
-- **Structs** — LLVM struct types, GEP for field access
-- **Loops** — basic blocks with back-edges
-- **Arrays** — heap allocation, bounds checking
-- **Closures** — function pointers + captured environment
-- **Match** — lowered to a chain of conditional branches
-
-This would let us compile most of the sample programs to native binaries.
-
-### 2. Borrow checker (#4)
-
-The crown jewel. Requires:
-- Control flow graph (CFG) construction
-- Liveness analysis
-- Move tracking
-- Borrow conflict detection
-
-This is the hardest phase and the one that makes Forge more than just
-"another language."
-
-### 3. Standard library (#6)
-
-Essential for real programs:
-- File I/O
-- String methods
-- Collections (HashMap, Vec as proper types)
-- Math functions
-
-### 4. Operator overloading (#7)
-
-Make `a + b` dispatch to `impl Add for Type`. Requires the type checker
-to resolve operators to trait method calls during compilation.
-
-### 5. comptime (#8)
-
-Zig-style compile-time execution. The tree-walk interpreter already exists —
-it could be reused to evaluate comptime blocks during compilation.
+| Milestone | Description | Status |
+|-----------|-------------|--------|
+| M1 | String methods (char_at, substring, split, etc.) | ✅ |
+| M2 | Mutable dynamic arrays (push, pop, insert in-place) | ✅ |
+| M3 | Generics foundation (TypeParam, GenericInstance) | ✅ |
+| M4 | Result/Option with ? propagation | ✅ |
+| M5 | HashMap / dictionary type | ✅ |
+| M6 | File I/O (File.read, File.write, args, exit) | ✅ |
+| M7 | Module system (use declarations, multi-file) | ✅ |
+| M8 | Enum variants in LLVM codegen | Queued |
+| M9 | Recursive types and Box\<T\> | Queued |
+| M10 | Trait dispatch and conformance checking | Queued |
+| M11 | Multi-line closures and closure codegen | Queued |
+| M12 | Integration: mini-lexer written in Forge | Queued |
+| #1 | **Self-hosting: rewrite compiler in Forge** | **The finale** |
 
 ## Test coverage
 
-| Phase       | Tests | Status |
-|-------------|-------|--------|
-| Lexer       | 33    | ✅     |
-| Parser      | 40    | ✅     |
-| Interpreter | 36    | ✅     |
-| HIR         | 12    | ✅     |
-| Type Checker| 44    | ✅     |
-| Codegen     | 12    | ✅     |
-| **Total**   | **177** | **All passing** |
+| Phase | Tests |
+|-------|-------|
+| Lexer | 33 |
+| Parser | 40 |
+| Interpreter | 36 |
+| HIR | 12 |
+| Type Checker | 44 |
+| Codegen | 17 |
+| Borrow Checker | 15 |
+| Comptime | 6 |
+| Stdlib | 13 |
+| Operator Overloading | 2 |
+| M1: Strings | 15 |
+| M2: Arrays | 11 |
+| M3: Generics | 11 |
+| M4: Result/Option | 18 |
+| M5: HashMap | 8 |
+| M6: File I/O | 5 |
+| M7: Modules | 6 |
+| **Total** | **292** |
