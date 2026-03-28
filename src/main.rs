@@ -3,6 +3,7 @@ use std::fs;
 use std::process;
 
 use forge::lexer::Lexer;
+use forge::parser::Parser;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -20,19 +21,26 @@ fn main() {
         }
     };
 
-    let (tokens, errors) = Lexer::new(&source).tokenize();
-
-    if !errors.is_empty() {
-        for err in &errors {
+    // Lex
+    let (tokens, lex_errors) = Lexer::new(&source).tokenize();
+    if !lex_errors.is_empty() {
+        for err in &lex_errors {
             eprintln!("{err}");
         }
-    }
-
-    for tok in &tokens {
-        println!("{:?}", tok);
-    }
-
-    if !errors.is_empty() {
         process::exit(1);
+    }
+
+    // Parse
+    let (program, parse_errors) = Parser::new(tokens).parse();
+    if !parse_errors.is_empty() {
+        for err in &parse_errors {
+            eprintln!("{err}");
+        }
+        process::exit(1);
+    }
+
+    // Dump AST
+    for item in &program.items {
+        println!("{:#?}", item);
     }
 }

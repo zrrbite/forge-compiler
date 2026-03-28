@@ -1,12 +1,29 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:claude.ai)",
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo run:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo clippy:*)",
       "Bash(cargo init:*)",
-      "Read(//home/zrrbite/.cargo/**)",
-      "Read(//home/zrrbite/**)",
-      "Bash(curl:*)",
-      "Bash(source:*)"
+      "Bash(cargo fix:*)",
+      "Bash(source /home/zrrbite/.cargo/env*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git init:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(chmod:*)",
+      "Bash(cat:*)",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep"
     ]
   }
 }
