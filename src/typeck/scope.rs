@@ -22,6 +22,8 @@ pub struct FnInfo {
 #[derive(Debug, Clone)]
 pub struct StructInfo {
     pub name: String,
+    /// Type parameter names (e.g., ["T"] for Stack<T>).
+    pub type_params: Vec<String>,
     pub fields: Vec<(String, Ty)>,
 }
 

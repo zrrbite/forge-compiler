@@ -42,6 +42,13 @@ pub enum Ty {
     },
     /// A named type that hasn't been resolved yet.
     Named(String),
+    /// A generic type parameter (e.g., T in Stack<T>).
+    TypeParam(String),
+    /// An instantiated generic type: e.g., Stack<i32>.
+    GenericInstance {
+        name: String,
+        args: Vec<Ty>,
+    },
 
     // -- Inference --
     /// A type variable (to be unified during inference).
@@ -176,6 +183,17 @@ impl fmt::Display for Ty {
                 write!(f, ") -> {ret}")
             }
             Ty::Named(name) => write!(f, "{name}"),
+            Ty::TypeParam(name) => write!(f, "{name}"),
+            Ty::GenericInstance { name, args } => {
+                write!(f, "{name}<")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{arg}")?;
+                }
+                write!(f, ">")
+            }
             Ty::Var(id) => write!(f, "?T{}", id.0),
             Ty::Error => write!(f, "<error>"),
         }
@@ -221,6 +239,10 @@ impl UnificationTable {
                 params: params.iter().map(|p| self.resolve(p)).collect(),
                 ret: Box::new(self.resolve(ret)),
             },
+            Ty::GenericInstance { name, args } => Ty::GenericInstance {
+                name: name.clone(),
+                args: args.iter().map(|a| self.resolve(a)).collect(),
+            },
             _ => ty.clone(),
         }
     }
@@ -256,6 +278,34 @@ impl UnificationTable {
             (Ty::Struct { name: a_name, .. }, Ty::Named(b_name))
             | (Ty::Named(b_name), Ty::Struct { name: a_name, .. })
                 if a_name == b_name =>
+            {
+                Ok(())
+            }
+
+            // Type parameters unify with anything (like type variables).
+            (Ty::TypeParam(_), _) | (_, Ty::TypeParam(_)) => Ok(()),
+
+            // Generic instances: same name, unify args pairwise.
+            (
+                Ty::GenericInstance {
+                    name: a_name,
+                    args: a_args,
+                },
+                Ty::GenericInstance {
+                    name: b_name,
+                    args: b_args,
+                },
+            ) if a_name == b_name && a_args.len() == b_args.len() => {
+                for (aa, ba) in a_args.iter().zip(b_args) {
+                    self.unify(aa, ba)?;
+                }
+                Ok(())
+            }
+
+            // Named type matches GenericInstance with the same base name.
+            (Ty::Named(name), Ty::GenericInstance { name: gname, .. })
+            | (Ty::GenericInstance { name: gname, .. }, Ty::Named(name))
+                if name == gname =>
             {
                 Ok(())
             }

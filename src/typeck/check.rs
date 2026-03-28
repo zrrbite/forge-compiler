@@ -31,6 +31,8 @@ pub struct TypeChecker {
     pub symbols: SymbolTable,
     pub unifier: UnificationTable,
     pub errors: Vec<TypeError>,
+    /// Currently active type parameters (e.g., ["T"] inside struct Stack<T>).
+    active_type_params: Vec<String>,
 }
 
 impl TypeChecker {
@@ -39,6 +41,7 @@ impl TypeChecker {
             symbols: SymbolTable::new(),
             unifier: UnificationTable::new(),
             errors: Vec::new(),
+            active_type_params: Vec::new(),
         };
         tc.register_builtins();
         tc
@@ -46,7 +49,6 @@ impl TypeChecker {
 
     fn register_builtins(&mut self) {
         // print() accepts any type, returns unit.
-        // We model this as fn(str) -> () for now.
         self.symbols.register_fn(
             "print".into(),
             FnInfo {
@@ -54,6 +56,60 @@ impl TypeChecker {
                 ret: Ty::Unit,
             },
         );
+        // Result/Option constructors.
+        let t = Ty::TypeParam("T".into());
+        let e = Ty::TypeParam("E".into());
+        self.symbols.register_fn(
+            "Ok".into(),
+            FnInfo {
+                params: vec![("value".into(), t.clone())],
+                ret: Ty::GenericInstance {
+                    name: "Result".into(),
+                    args: vec![t.clone()],
+                },
+            },
+        );
+        self.symbols.register_fn(
+            "Err".into(),
+            FnInfo {
+                params: vec![("error".into(), e.clone())],
+                ret: Ty::GenericInstance {
+                    name: "Result".into(),
+                    args: vec![e],
+                },
+            },
+        );
+        self.symbols.register_fn(
+            "Some".into(),
+            FnInfo {
+                params: vec![("value".into(), t.clone())],
+                ret: Ty::GenericInstance {
+                    name: "Option".into(),
+                    args: vec![t],
+                },
+            },
+        );
+        // Other stdlib builtins.
+        for name in [
+            "println",
+            "eprint",
+            "to_str",
+            "to_int",
+            "to_float",
+            "abs",
+            "min",
+            "max",
+            "assert",
+            "assert_eq",
+        ] {
+            self.symbols.register_fn(
+                name.into(),
+                FnInfo {
+                    params: vec![("arg".into(), Ty::Str)],
+                    ret: Ty::Unit,
+                },
+            );
+        }
     }
 
     fn error(&mut self, message: String, span: Span) {
@@ -92,13 +148,20 @@ impl TypeChecker {
                     .register_fn(func.name.clone(), FnInfo { params, ret });
             }
             HirItemKind::Struct(s) => {
+                let type_params: Vec<String> =
+                    s.generic_params.iter().map(|g| g.name.clone()).collect();
+                // Activate type params during field type resolution.
+                let saved = self.active_type_params.clone();
+                self.active_type_params.extend(type_params.iter().cloned());
                 let fields: Vec<(String, Ty)> = s
                     .fields
                     .iter()
                     .map(|f| (f.name.clone(), self.resolve_hir_type(&f.ty)))
                     .collect();
+                self.active_type_params = saved;
                 self.symbols.register_struct(StructInfo {
                     name: s.name.clone(),
+                    type_params,
                     fields,
                 });
             }
@@ -1012,11 +1075,24 @@ impl TypeChecker {
     /// Convert a HIR type to an internal Ty.
     fn resolve_hir_type(&mut self, ty: &HirType) -> Ty {
         match &ty.kind {
-            HirTypeKind::Named(name) => Ty::from_name(name),
+            HirTypeKind::Named(name) => {
+                // Check if this is an active type parameter.
+                if self.active_type_params.contains(name) {
+                    return Ty::TypeParam(name.clone());
+                }
+                Ty::from_name(name)
+            }
             HirTypeKind::Generic { name, args } => {
-                // For now, just return the named type (generics are erased).
-                let _ = args;
-                Ty::Named(name.clone())
+                let resolved_args: Vec<Ty> =
+                    args.iter().map(|a| self.resolve_hir_type(a)).collect();
+                if resolved_args.is_empty() {
+                    Ty::Named(name.clone())
+                } else {
+                    Ty::GenericInstance {
+                        name: name.clone(),
+                        args: resolved_args,
+                    }
+                }
             }
             HirTypeKind::Reference { mutable, inner } => Ty::Ref {
                 mutable: *mutable,
