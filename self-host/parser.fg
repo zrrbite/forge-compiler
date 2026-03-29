@@ -1,0 +1,718 @@
+// parser.fg — Recursive descent parser for Forge, written in Forge.
+// Takes a token array from lexer.fg and produces AST nodes from ast.fg.
+
+use lexer
+use ast
+
+// ── Parser state ────────────────────────────────────────────────────────
+
+struct Parser {
+    tokens: [Token],
+    pos: i64,
+}
+
+impl Parser {
+    fn new(tokens: [Token]) -> Parser {
+        Parser { tokens, pos: 0 }
+    }
+
+    fn peek(self) -> Token {
+        if self.pos < self.tokens.len() {
+            self.tokens[self.pos]
+        } else {
+            Token.new("eof", "", 0, 0)
+        }
+    }
+
+    fn advance(mut self) -> Token {
+        let tok = self.peek()
+        if self.pos < self.tokens.len() {
+            self.pos = self.pos + 1
+        }
+        tok
+    }
+
+    fn eat(mut self, kind: str, value: str) -> bool {
+        let tok = self.peek()
+        if tok.kind == kind {
+            if value == "" || tok.value == value {
+                self.advance()
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    fn expect(mut self, kind: str, value: str) -> Token {
+        let tok = self.peek()
+        if tok.kind == kind {
+            if value == "" || tok.value == value {
+                self.advance()
+            } else {
+                let d = tok.describe()
+                print("Parse error: expected " + kind + " " + value + ", got " + d)
+                tok
+            }
+        } else {
+            let d = tok.describe()
+            print("Parse error: expected " + kind + ", got " + d)
+            tok
+        }
+    }
+
+    fn skip_newlines(mut self) -> i64 {
+        let mut count = 0
+        let mut skipping = true
+        while skipping {
+            if self.peek().kind == "newline" {
+                self.advance()
+                count = count + 1
+            } else {
+                skipping = false
+            }
+        }
+        count
+    }
+
+    fn at_end(self) -> bool {
+        self.peek().kind == "eof"
+    }
+}
+
+// ── Program parsing ─────────────────────────────────────────────────────
+
+fn parse_program(mut p: Parser) -> [Item] {
+    let mut items = []
+    p.skip_newlines()
+    let mut going = true
+    while going {
+        if p.at_end() {
+            going = false
+        } else {
+            let item = parse_item(p)
+            items.push(item)
+            p.skip_newlines()
+        }
+    }
+    items
+}
+
+fn parse_item(mut p: Parser) -> Item {
+    let tok = p.peek()
+    if tok.value == "fn" {
+        parse_fn(p)
+    } else if tok.value == "struct" {
+        parse_struct(p)
+    } else if tok.value == "impl" {
+        parse_impl(p)
+    } else if tok.value == "use" {
+        parse_use(p)
+    } else {
+        let d = tok.describe()
+        print("Parse error: expected item, got " + d)
+        p.advance()
+        Item.new_use([])
+    }
+}
+
+// ── Functions ───────────────────────────────────────────────────────────
+
+fn parse_fn(mut p: Parser) -> Item {
+    p.expect("keyword", "fn")
+    let name_tok = p.expect("ident", "")
+    p.expect("op", "(")
+    let params = parse_params(p)
+    p.expect("op", ")")
+
+    let mut return_type = ""
+    if p.peek().value == "->" {
+        p.advance()
+        return_type = parse_type_name(p)
+    }
+
+    p.skip_newlines()
+    let body = parse_block(p)
+    Item.new_fn(name_tok.value, params, return_type, body)
+}
+
+fn parse_params(mut p: Parser) -> [Param] {
+    let mut params = []
+    let mut going = true
+    while going {
+        p.skip_newlines()
+        if p.peek().value == ")" {
+            going = false
+        } else {
+            let mut mutable = false
+            if p.peek().value == "mut" {
+                p.advance()
+                mutable = true
+            }
+            if p.peek().value == "self" {
+                p.advance()
+                params.push(Param.new("self", "Self", mutable))
+            } else {
+                let name_tok = p.expect("ident", "")
+                p.expect("op", ":")
+                let ty = parse_type_name(p)
+                params.push(Param.new(name_tok.value, ty, mutable))
+            }
+            if !p.eat("op", ",") {
+                going = false
+            }
+        }
+    }
+    params
+}
+
+fn parse_type_name(mut p: Parser) -> str {
+    let tok = p.peek()
+    if tok.value == "&" {
+        p.advance()
+        if p.peek().value == "mut" {
+            p.advance()
+            "&mut " + parse_type_name(p)
+        } else {
+            "&" + parse_type_name(p)
+        }
+    } else if tok.value == "[" {
+        p.advance()
+        let inner = parse_type_name(p)
+        p.expect("op", "]")
+        "[" + inner + "]"
+    } else if tok.kind == "ident" || tok.kind == "keyword" {
+        let name = p.advance().value
+        if p.peek().value == "<" {
+            p.advance()
+            let mut type_args = name + "<"
+            type_args = type_args + parse_type_name(p)
+            let mut more = true
+            while more {
+                if p.eat("op", ",") {
+                    type_args = type_args + ", " + parse_type_name(p)
+                } else {
+                    more = false
+                }
+            }
+            p.expect("op", ">")
+            type_args + ">"
+        } else {
+            name
+        }
+    } else {
+        p.advance()
+        "unknown"
+    }
+}
+
+// ── Structs ─────────────────────────────────────────────────────────────
+
+fn parse_struct(mut p: Parser) -> Item {
+    p.expect("keyword", "struct")
+    let name_tok = p.expect("ident", "")
+    // Skip generic params for now.
+    if p.peek().value == "<" {
+        let mut depth = 1
+        p.advance()
+        let mut scanning = true
+        while scanning {
+            if p.peek().value == "<" {
+                depth = depth + 1
+                p.advance()
+            } else if p.peek().value == ">" {
+                depth = depth - 1
+                p.advance()
+                if depth == 0 {
+                    scanning = false
+                }
+            } else {
+                p.advance()
+            }
+        }
+    }
+    p.skip_newlines()
+    p.expect("op", "{")
+
+    let mut fields = []
+    p.skip_newlines()
+    let mut going = true
+    while going {
+        if p.peek().value == "}" {
+            going = false
+        } else {
+            let fname = p.expect("ident", "").value
+            p.expect("op", ":")
+            let ftype = parse_type_name(p)
+            fields.push(Field.new(fname, ftype))
+            p.eat("op", ",")
+            p.skip_newlines()
+        }
+    }
+    p.expect("op", "}")
+    Item.new_struct(name_tok.value, fields)
+}
+
+// ── Impl blocks ─────────────────────────────────────────────────────────
+
+fn parse_impl(mut p: Parser) -> Item {
+    p.expect("keyword", "impl")
+    // Skip generic params.
+    if p.peek().value == "<" {
+        let mut depth = 1
+        p.advance()
+        let mut scanning = true
+        while scanning {
+            if p.peek().value == "<" {
+                depth = depth + 1
+                p.advance()
+            } else if p.peek().value == ">" {
+                depth = depth - 1
+                p.advance()
+                if depth == 0 {
+                    scanning = false
+                }
+            } else {
+                p.advance()
+            }
+        }
+    }
+
+    let first = p.expect("ident", "").value
+    let mut trait_name = ""
+    let mut target = first
+
+    if p.peek().value == "for" {
+        p.advance()
+        trait_name = first
+        target = p.expect("ident", "").value
+    }
+
+    p.skip_newlines()
+    p.expect("op", "{")
+
+    let mut methods = []
+    p.skip_newlines()
+    let mut going = true
+    while going {
+        if p.peek().value == "}" {
+            going = false
+        } else if p.peek().value == "fn" {
+            methods.push(parse_fn(p))
+            p.skip_newlines()
+        } else {
+            p.advance()
+        }
+    }
+    p.expect("op", "}")
+    Item.new_impl(target, trait_name, methods)
+}
+
+// ── Use ─────────────────────────────────────────────────────────────────
+
+fn parse_use(mut p: Parser) -> Item {
+    p.expect("keyword", "use")
+    let mut segments = []
+    segments.push(p.expect("ident", "").value)
+    let mut more = true
+    while more {
+        if p.eat("op", ".") {
+            segments.push(p.expect("ident", "").value)
+        } else {
+            more = false
+        }
+    }
+    Item.new_use(segments)
+}
+
+// ── Blocks and statements ───────────────────────────────────────────────
+
+fn parse_block(mut p: Parser) -> [Stmt] {
+    p.expect("op", "{")
+    let mut stmts = []
+    p.skip_newlines()
+    let mut going = true
+    while going {
+        if p.peek().value == "}" || p.at_end() {
+            going = false
+        } else {
+            stmts.push(parse_stmt(p))
+            p.skip_newlines()
+        }
+    }
+    p.expect("op", "}")
+    stmts
+}
+
+fn parse_stmt(mut p: Parser) -> Stmt {
+    let tok = p.peek()
+    if tok.value == "let" {
+        parse_let(p)
+    } else if tok.value == "return" {
+        p.advance()
+        if p.peek().kind == "newline" || p.peek().value == "}" {
+            Stmt.new_return(Expr.new_none())
+        } else {
+            let expr = parse_expr(p)
+            Stmt.new_return(expr)
+        }
+    } else if tok.value == "break" {
+        p.advance()
+        Stmt.new_break()
+    } else if tok.value == "continue" {
+        p.advance()
+        Stmt.new_continue()
+    } else {
+        let expr = parse_expr(p)
+        // Check for assignment.
+        if p.peek().value == "=" {
+            p.advance()
+            let value = parse_expr(p)
+            Stmt.new_expr(Expr.new_assign(expr, value))
+        } else if p.peek().value == "+=" || p.peek().value == "-=" || p.peek().value == "*=" {
+            let op = p.advance().value
+            let value = parse_expr(p)
+            let bin_op = op.substring(0, 1)
+            Stmt.new_expr(Expr.new_assign(expr, Expr.new_binop(bin_op, expr, value)))
+        } else {
+            Stmt.new_expr(expr)
+        }
+    }
+}
+
+fn parse_let(mut p: Parser) -> Stmt {
+    p.expect("keyword", "let")
+    let mut mutable = false
+    if p.peek().value == "mut" {
+        p.advance()
+        mutable = true
+    }
+    let name = p.expect("ident", "").value
+    let mut ty = ""
+    if p.eat("op", ":") {
+        ty = parse_type_name(p)
+    }
+    let mut value = Expr.new_none()
+    if p.eat("op", "=") {
+        value = parse_expr(p)
+    }
+    Stmt.new_let(name, mutable, ty, value)
+}
+
+// ── Expressions (Pratt parser) ──────────────────────────────────────────
+
+fn parse_expr(mut p: Parser) -> Expr {
+    parse_expr_bp(p, 0)
+}
+
+fn binding_power(op: str) -> i64 {
+    if op == "||" {
+        2
+    } else if op == "&&" {
+        4
+    } else if op == "==" || op == "!=" {
+        6
+    } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
+        8
+    } else if op == "+" || op == "-" {
+        10
+    } else if op == "*" || op == "/" || op == "%" {
+        12
+    } else {
+        0
+    }
+}
+
+fn is_binop(tok: Token) -> bool {
+    if tok.kind != "op" {
+        false
+    } else {
+        binding_power(tok.value) > 0
+    }
+}
+
+fn parse_expr_bp(mut p: Parser, min_bp: i64) -> Expr {
+    let mut lhs = parse_prefix(p)
+
+    // Postfix: field access, calls, index, ?
+    let mut postfixing = true
+    while postfixing {
+        let tok = p.peek()
+        if tok.value == "." {
+            p.advance()
+            let field_name = p.expect("ident", "").value
+            if p.peek().value == "(" {
+                // Method call.
+                p.advance()
+                let call_args = parse_call_args(p)
+                p.expect("op", ")")
+                lhs = Expr.new_call(Expr.new_field(lhs, field_name), call_args)
+            } else {
+                lhs = Expr.new_field(lhs, field_name)
+            }
+        } else if tok.value == "(" {
+            p.advance()
+            let call_args = parse_call_args(p)
+            p.expect("op", ")")
+            lhs = Expr.new_call(lhs, call_args)
+        } else if tok.value == "[" {
+            p.advance()
+            let idx = parse_expr(p)
+            p.expect("op", "]")
+            lhs = Expr.new_index(lhs, idx)
+        } else if tok.value == "?" {
+            p.advance()
+            lhs = Expr.new_call(Expr.new_ident("__try"), [lhs])
+        } else {
+            postfixing = false
+        }
+    }
+
+    // Infix: binary operators with precedence.
+    let mut infixing = true
+    while infixing {
+        let tok = p.peek()
+        if is_binop(tok) {
+            let bp = binding_power(tok.value)
+            if bp <= min_bp {
+                infixing = false
+            } else {
+                let op = p.advance().value
+                let rhs = parse_expr_bp(p, bp)
+                lhs = Expr.new_binop(op, lhs, rhs)
+            }
+        } else if tok.value == ".." {
+            p.advance()
+            let rhs = parse_expr_bp(p, 2)
+            lhs = Expr.new_binop("..", lhs, rhs)
+        } else {
+            infixing = false
+        }
+    }
+
+    lhs
+}
+
+fn parse_prefix(mut p: Parser) -> Expr {
+    let tok = p.peek()
+
+    if tok.kind == "int" {
+        p.advance()
+        Expr.new_int(tok.value)
+    } else if tok.kind == "float" {
+        p.advance()
+        Expr.new_float(tok.value)
+    } else if tok.kind == "string" {
+        p.advance()
+        Expr.new_string(tok.value)
+    } else if tok.value == "true" || tok.value == "false" {
+        p.advance()
+        Expr.new_bool(tok.value)
+    } else if tok.kind == "ident" {
+        let name = p.advance().value
+        // Check for struct literal: Name { ... }
+        if p.peek().value == "{" {
+            if name.char_at(0).is_alpha() {
+                // Could be struct literal if uppercase, or block.
+                // Use uppercase heuristic.
+                let first_char = name.char_at(0)
+                if first_char == first_char.to_upper() {
+                    p.advance()
+                    let field_exprs = parse_struct_fields(p)
+                    p.expect("op", "}")
+                    Expr.new_struct_lit(name, field_exprs)
+                } else {
+                    Expr.new_ident(name)
+                }
+            } else {
+                Expr.new_ident(name)
+            }
+        } else {
+            Expr.new_ident(name)
+        }
+    } else if tok.value == "self" {
+        p.advance()
+        Expr.new_ident("self")
+    } else if tok.value == "(" {
+        p.advance()
+        let inner = parse_expr(p)
+        p.expect("op", ")")
+        inner
+    } else if tok.value == "[" {
+        p.advance()
+        let mut elements = []
+        p.skip_newlines()
+        let mut going = true
+        while going {
+            if p.peek().value == "]" {
+                going = false
+            } else {
+                elements.push(parse_expr(p))
+                if !p.eat("op", ",") {
+                    going = false
+                }
+                p.skip_newlines()
+            }
+        }
+        p.expect("op", "]")
+        Expr.new_array(elements)
+    } else if tok.value == "{" {
+        let stmts = parse_block(p)
+        Expr.new_block(stmts)
+    } else if tok.value == "if" {
+        parse_if_expr(p)
+    } else if tok.value == "match" {
+        parse_match_expr(p)
+    } else if tok.value == "for" {
+        parse_for_expr(p)
+    } else if tok.value == "while" {
+        parse_while_expr(p)
+    } else if tok.value == "|" {
+        parse_closure(p)
+    } else if tok.value == "-" {
+        p.advance()
+        let operand = parse_expr_bp(p, 14)
+        Expr.new_unary("-", operand)
+    } else if tok.value == "!" {
+        p.advance()
+        let operand = parse_expr_bp(p, 14)
+        Expr.new_unary("!", operand)
+    } else if tok.value == "&" {
+        p.advance()
+        if p.peek().value == "mut" {
+            p.advance()
+        }
+        let operand = parse_expr_bp(p, 14)
+        Expr.new_unary("&", operand)
+    } else {
+        let d = tok.describe()
+        print("Parse error: expected expression, got " + d)
+        p.advance()
+        Expr.new_none()
+    }
+}
+
+fn parse_call_args(mut p: Parser) -> [Expr] {
+    let mut call_args = []
+    p.skip_newlines()
+    let mut going = true
+    while going {
+        if p.peek().value == ")" {
+            going = false
+        } else {
+            call_args.push(parse_expr(p))
+            if !p.eat("op", ",") {
+                going = false
+            }
+            p.skip_newlines()
+        }
+    }
+    call_args
+}
+
+fn parse_struct_fields(mut p: Parser) -> [Expr] {
+    let mut field_exprs = []
+    p.skip_newlines()
+    let mut going = true
+    while going {
+        if p.peek().value == "}" {
+            going = false
+        } else {
+            let fname = p.expect("ident", "").value
+            if p.eat("op", ":") {
+                let fval = parse_expr(p)
+                field_exprs.push(Expr.new_binop(":", Expr.new_ident(fname), fval))
+            } else {
+                // Shorthand: Name { x } means Name { x: x }
+                field_exprs.push(Expr.new_binop(":", Expr.new_ident(fname), Expr.new_ident(fname)))
+            }
+            p.eat("op", ",")
+            p.skip_newlines()
+        }
+    }
+    field_exprs
+}
+
+fn parse_if_expr(mut p: Parser) -> Expr {
+    p.expect("keyword", "if")
+    let cond = parse_expr(p)
+    p.skip_newlines()
+    let then_body = parse_block(p)
+    let mut else_body = []
+    if p.peek().value == "else" {
+        p.advance()
+        p.skip_newlines()
+        if p.peek().value == "if" {
+            let nested = parse_if_expr(p)
+            else_body.push(Stmt.new_expr(nested))
+        } else {
+            else_body = parse_block(p)
+        }
+    }
+    Expr.new_if(cond, then_body, else_body)
+}
+
+fn parse_match_expr(mut p: Parser) -> Expr {
+    p.expect("keyword", "match")
+    let scrutinee = parse_expr(p)
+    p.skip_newlines()
+    p.expect("op", "{")
+    // For now, skip the match body — just consume until }.
+    let mut depth = 1
+    let mut scanning = true
+    while scanning {
+        let tok = p.advance()
+        if tok.value == "{" {
+            depth = depth + 1
+        } else if tok.value == "}" {
+            depth = depth - 1
+            if depth == 0 {
+                scanning = false
+            }
+        }
+    }
+    Expr.new_call(Expr.new_ident("__match"), [scrutinee])
+}
+
+fn parse_for_expr(mut p: Parser) -> Expr {
+    p.expect("keyword", "for")
+    let binding = p.expect("ident", "").value
+    p.expect("keyword", "in")
+    let iter = parse_expr(p)
+    p.skip_newlines()
+    let body = parse_block(p)
+    Expr.new_for(binding, iter, body)
+}
+
+fn parse_while_expr(mut p: Parser) -> Expr {
+    p.expect("keyword", "while")
+    let cond = parse_expr(p)
+    p.skip_newlines()
+    let body = parse_block(p)
+    Expr.new_while(cond, body)
+}
+
+fn parse_closure(mut p: Parser) -> Expr {
+    p.expect("op", "|")
+    let mut param_names = []
+    let mut going = true
+    while going {
+        if p.peek().value == "|" {
+            going = false
+        } else {
+            param_names.push(p.expect("ident", "").value)
+            if !p.eat("op", ",") {
+                going = false
+            }
+        }
+    }
+    p.expect("op", "|")
+    let body = parse_expr(p)
+    // Encode closure as a special call node.
+    let sep = ","
+    let param_str = param_names.join(sep)
+    Expr.new_call(Expr.new_ident("__closure"), [Expr.new_string(param_str), body])
+}
+

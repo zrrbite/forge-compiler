@@ -100,19 +100,23 @@ impl Item {
 
     fn describe(self) -> str {
         if self.kind == "fn" {
-            "fn {self.name}({self.params.len()} params) -> {self.return_type}"
+            let pc = to_str(self.params.len())
+            "fn " + self.name + "(" + pc + " params) -> " + self.return_type
         } else if self.kind == "struct" {
-            "struct {self.name}({self.fields.len()} fields)"
+            let fc = to_str(self.fields.len())
+            "struct " + self.name + "(" + fc + " fields)"
         } else if self.kind == "impl" {
+            let mc = to_str(self.methods.len())
             if self.trait_name.len() > 0 {
-                "impl {self.trait_name} for {self.name}({self.methods.len()} methods)"
+                "impl " + self.trait_name + " for " + self.name + "(" + mc + " methods)"
             } else {
-                "impl {self.name}({self.methods.len()} methods)"
+                "impl " + self.name + "(" + mc + " methods)"
             }
         } else if self.kind == "use" {
-            "use {self.use_path.join(\".\")}"
+            let path = self.use_path.join(".")
+            "use " + path
         } else {
-            "{self.kind} {self.name}"
+            self.kind + " " + self.name
         }
     }
 }
