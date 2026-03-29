@@ -1,5 +1,13 @@
 /target
-# Compiled Forge binaries
+*.o
+
+# Compiled Forge test binaries
 hello
 vec2
-*.o
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

@@ -1,7 +1,17 @@
 [package]
 name = "forge"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2024"
+description = "The Forge programming language — Rust's safety meets C++'s power with clean syntax"
+repository = "https://github.com/zrrbite/forge-compiler"
+license = "MIT"
+readme = "README.md"
+keywords = ["compiler", "language", "llvm", "systems-programming"]
+categories = ["compilers", "development-tools"]
+
+[[bin]]
+name = "forge"
+path = "src/main.rs"
 
 [dependencies]
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm21-1"] }
