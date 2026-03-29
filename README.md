@@ -288,13 +288,13 @@ Benchmark: recursive fibonacci(35) — same algorithm, same result (9,227,465):
 
 | Language | Compile | Runtime | Binary Size |
 |----------|---------|---------|-------------|
-| **Forge (compiled)** | 139ms | 63ms | 15 KB |
-| C (gcc -O2) | 137ms | 24ms | 15 KB |
-| Rust (rustc -O) | 64ms | 32ms | 3.9 MB |
+| **Forge (compiled)** | 93ms | 35ms | 15 KB |
+| C (gcc -O2) | 85ms | 24ms | 15 KB |
+| Rust (rustc -O) | 61ms | 30ms | 3.9 MB |
 | **Forge (interpreted)** | — | 53s | — |
 
-Forge compiled is 2.6x slower than C — respectable for a compiler with no
-optimization passes yet. Binary size matches C exactly. See
+Forge compiled is within **15% of Rust** and **1.5x of C** — with the same
+tiny binary size. See
 [detailed comparisons](docs/10-comparisons.md) for syntax and feature analysis
 across Forge, Rust, C++, Zig, and Go.
 

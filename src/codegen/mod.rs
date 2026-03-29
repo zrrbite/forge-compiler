@@ -131,16 +131,26 @@ impl<'ctx> Codegen<'ctx> {
         let target = Target::from_triple(&triple)
             .map_err(|e| CodegenError(format!("Failed to get target: {}", e.to_string())))?;
 
+        let cpu = TargetMachine::get_host_cpu_name();
+        let features = TargetMachine::get_host_cpu_features();
         let machine = target
             .create_target_machine(
                 &triple,
-                "generic",
-                "",
-                OptimizationLevel::Default,
+                cpu.to_str().unwrap_or("generic"),
+                features.to_str().unwrap_or(""),
+                OptimizationLevel::Aggressive, // -O3
                 RelocMode::PIC,
                 CodeModel::Default,
             )
             .ok_or_else(|| CodegenError("Failed to create target machine".into()))?;
+
+        // Run LLVM optimization passes (-O3 equivalent).
+        let pass_options = inkwell::passes::PassBuilderOptions::create();
+        pass_options.set_loop_unrolling(true);
+        pass_options.set_merge_functions(true);
+        self.module
+            .run_passes("default<O3>", &machine, pass_options)
+            .map_err(|e| CodegenError(format!("Optimization failed: {}", e.to_string())))?;
 
         machine
             .write_to_file(&self.module, FileType::Object, path)
