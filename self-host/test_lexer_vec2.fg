@@ -1,0 +1,41 @@
+// Test the self-hosted lexer on vec2.fg — a more complex file.
+use lexer
+
+fn main() {
+    let source = File.read("tests/samples/vec2.fg").unwrap()
+    let raw_tokens = tokenize(source)
+    let tokens = collapse_newlines(raw_tokens)
+
+    print("Tokens: {tokens.len()}")
+
+    // Count by kind.
+    let mut keywords = 0
+    let mut idents = 0
+    let mut ops = 0
+    let mut numbers = 0
+    let mut strings = 0
+    let mut newlines = 0
+
+    for tok in tokens {
+        if tok.kind == "keyword" {
+            keywords = keywords + 1
+        } else if tok.kind == "ident" {
+            idents = idents + 1
+        } else if tok.kind == "op" {
+            ops = ops + 1
+        } else if tok.kind == "int" || tok.kind == "float" {
+            numbers = numbers + 1
+        } else if tok.kind == "string" {
+            strings = strings + 1
+        } else if tok.kind == "newline" {
+            newlines = newlines + 1
+        }
+    }
+
+    print("  keywords:  {keywords}")
+    print("  idents:    {idents}")
+    print("  operators: {ops}")
+    print("  numbers:   {numbers}")
+    print("  strings:   {strings}")
+    print("  newlines:  {newlines}")
+}
