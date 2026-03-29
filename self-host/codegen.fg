@@ -71,13 +71,53 @@ fn collect_fn_types(params: [Param], body: [Stmt]) -> str {
         }
     }
     for stmt in body {
-        if stmt.kind == "let" {
-            let ty = if stmt.ty != "" { c_type(stmt.ty) } else { infer_c_type_with_map(stmt.expr, result) }
-            if result.len() > 0 { result = result + "," }
-            result = result + stmt.name + ":" + ty
-        }
+        result = collect_stmt_types(stmt, result)
     }
     result
+}
+
+fn collect_stmt_types(stmt: Stmt, result: str) -> str {
+    let mut r = result
+    if stmt.kind == "let" {
+        let ty = if stmt.ty != "" { c_type(stmt.ty) } else { infer_c_type_with_map(stmt.expr, r) }
+        if r.len() > 0 { r = r + "," }
+        r = r + stmt.name + ":" + ty
+    } else if stmt.kind == "expr" {
+        r = collect_expr_types(stmt.expr, r)
+    }
+    r
+}
+
+fn collect_expr_types(expr: Expr, result: str) -> str {
+    let mut r = result
+    if expr.kind == "for" {
+        let iter = expr.left[0]
+        if iter.kind == "binop" && iter.value == ".." {
+            if r.len() > 0 { r = r + "," }
+            r = r + expr.value + ":int64_t"
+        }
+        // Recurse into for-loop body
+        for stmt in expr.body {
+            r = collect_stmt_types(stmt, r)
+        }
+    } else if expr.kind == "if" {
+        // Recurse into if/else bodies
+        for stmt in expr.body {
+            r = collect_stmt_types(stmt, r)
+        }
+        for stmt in expr.else_body {
+            r = collect_stmt_types(stmt, r)
+        }
+    } else if expr.kind == "while" {
+        for stmt in expr.body {
+            r = collect_stmt_types(stmt, r)
+        }
+    } else if expr.kind == "block" {
+        for stmt in expr.body {
+            r = collect_stmt_types(stmt, r)
+        }
+    }
+    r
 }
 
 fn lookup_type(type_map: str, name: str) -> str {
@@ -663,14 +703,47 @@ fn gen_while(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
 
 fn gen_for(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
     let mut g = gen
-    g = g.emit("/* for " + expr.value + " in ... */ \{\n")
-    g.indent = g.indent + 1
-    for stmt in expr.body {
-        g = gen_stmt(g, stmt, false, "void", type_map)
+    let binding = expr.value
+    let iter = expr.left[0]
+
+    // Check if iterating over a range (binop "..")
+    if iter.kind == "binop" && iter.value == ".." {
+        g = g.emit("for (int64_t " + binding + " = ")
+        g = gen_expr(g, iter.left[0], type_map)
+        g = g.emit("; " + binding + " < ")
+        g = gen_expr(g, iter.right[0], type_map)
+        g = g.emit("; " + binding + "++) \{\n")
+        g.indent = g.indent + 1
+        for stmt in expr.body {
+            g = gen_stmt(g, stmt, false, "void", type_map)
+        }
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\}")
+    } else {
+        // Array iteration — emit as indexed loop over a ForgeArray
+        g = g.emit("\{\n")
+        g.indent = g.indent + 1
+        g = g.emit_indent()
+        g = g.emit("ForgeArray _iter = ")
+        g = gen_expr(g, iter, type_map)
+        g = g.emit(";\n")
+        g = g.emit_indent()
+        g = g.emit("for (int64_t _i = 0; _i < _iter.len; _i++) \{\n")
+        g.indent = g.indent + 1
+        // Declare the loop variable — we don't know the element type, use void*
+        g = g.emit_indent()
+        g = g.emit("void* " + binding + " = forge_array_get(&_iter, _i);\n")
+        for stmt in expr.body {
+            g = gen_stmt(g, stmt, false, "void", type_map)
+        }
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\}\n")
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\}")
     }
-    g.indent = g.indent - 1
-    g = g.emit_indent()
-    g = g.emit("\}")
     g
 }
 
@@ -761,11 +834,32 @@ fn gen_interp_part(gen: CodeGen, part: str, type_map: str) -> CodeGen {
         } else if var_type == "bool" {
             g = g.emit("forge_bool_to_str(" + content + ")")
         } else if content.contains("(") {
-            // Method call in interpolation — rewrite and wrap
-            g = g.emit("forge_f64_to_str(" + rewrite_interp_expr(content, type_map) + ")")
+            // Method call in interpolation — rewrite and wrap with appropriate to_str
+            let rewritten = rewrite_interp_expr(content, type_map)
+            let ret_hint = guess_interp_return_type(content, type_map)
+            if ret_hint == "const char*" {
+                g = g.emit(rewritten)
+            } else if ret_hint == "int64_t" || ret_hint == "int32_t" {
+                g = g.emit("forge_i64_to_str((int64_t)" + rewritten + ")")
+            } else if ret_hint == "bool" {
+                g = g.emit("forge_bool_to_str(" + rewritten + ")")
+            } else {
+                g = g.emit("forge_f64_to_str(" + rewritten + ")")
+            }
         } else if content.contains(".") {
-            // Field access — guess double for now
-            g = g.emit("forge_f64_to_str(" + content + ")")
+            // Field access — look up the object type to determine field type
+            let dot_pos = find_char(content, ".")
+            let field_obj = content.substring(0, dot_pos)
+            let obj_type = lookup_type(type_map, field_obj)
+            // Default to f64 for struct fields (most common for math)
+            // but if it's a known int type, use i64
+            if obj_type == "int64_t" || obj_type == "int32_t" {
+                g = g.emit("forge_i64_to_str((int64_t)" + content + ")")
+            } else if obj_type == "const char*" {
+                g = g.emit(content)
+            } else {
+                g = g.emit("forge_f64_to_str(" + content + ")")
+            }
         } else {
             g = g.emit(content)
         }
@@ -815,13 +909,56 @@ fn rewrite_method_call(content: str, type_map: str) -> str {
         else { paren = paren + 1 }
     }
     let method = rest.substring(0, paren)
+    // Extract arguments between "(" and ")"
+    let mut args_str = ""
+    if paren < rest.len() {
+        // rest from paren is "(args)"
+        let inner = rest.substring(paren + 1, rest.len() - 1)
+        if inner.len() > 0 {
+            args_str = ", " + inner
+        }
+    }
     // Look up object type
     let obj_type = lookup_type(type_map, obj)
     if obj_type != "" && obj_type != "const char*" && obj_type != "int64_t" && obj_type != "double" && obj_type != "bool" {
-        obj_type + "_" + method + "(" + obj + ")"
+        obj_type + "_" + method + "(" + obj + args_str + ")"
     } else {
         content
     }
+}
+
+fn find_char(s: str, ch: str) -> i64 {
+    let mut i = 0
+    while i < s.len() {
+        if s.char_at(i) == ch { return i }
+        i = i + 1
+    }
+    s.len()
+}
+
+// Guess the return type of a method call expression in string interpolation.
+// content is like "buf.size()" or "greet(name)"
+fn guess_interp_return_type(content: str, type_map: str) -> str {
+    // Find the method name
+    let dot_pos = find_char(content, ".")
+    if dot_pos >= content.len() {
+        // No dot — free function call, default to int64_t
+        return "int64_t"
+    }
+    let obj = content.substring(0, dot_pos)
+    let rest = content.substring(dot_pos + 1, content.len())
+    let paren_pos = find_char(rest, "(")
+    let method = if paren_pos < rest.len() { rest.substring(0, paren_pos) } else { rest }
+
+    // Known methods that return specific types
+    if method == "len" || method == "size" || method == "count" { return "int64_t" }
+    if method == "to_str" || method == "to_string" || method == "describe" || method == "name" { return "const char*" }
+    if method == "length" || method == "sqrt" || method == "abs" { return "double" }
+    if method == "is_empty" || method == "contains" || method == "starts_with" { return "bool" }
+
+    // Check if the method is likely a getter returning the object's field type
+    // Default: double (most numeric methods return double)
+    "double"
 }
 
 // ---- Helpers ----
