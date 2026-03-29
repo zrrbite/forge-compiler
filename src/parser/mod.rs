@@ -1133,8 +1133,7 @@ impl Parser {
         self.skip_newlines();
         let then_block = self.parse_block()?;
 
-        // Check for else — may be after newlines (e.g., "}\n else {").
-        // Peek ahead past newlines to see if there's an else.
+        // Check for else — may be after newlines.
         let saved_pos = self.pos;
         self.skip_newlines();
         let else_block = if self.eat(&TokenKind::Else) {
@@ -1152,7 +1151,6 @@ impl Parser {
                 }))
             }
         } else {
-            // No else found — restore position so newlines aren't consumed.
             self.pos = saved_pos;
             None
         };

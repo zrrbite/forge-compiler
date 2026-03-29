@@ -834,10 +834,15 @@ impl Interpreter {
             let result = self.eval_method_call(obj, field, args);
 
             // Write back modified self for mut self methods.
-            if let Some(new_self) = self.last_modified_self.take()
-                && let ExprKind::Identifier(var_name) = &object.kind
-            {
-                let _ = self.env.set_deref(var_name, new_self);
+            if let Some(new_self) = self.last_modified_self.take() {
+                let var_name = match &object.kind {
+                    ExprKind::Identifier(name) => Some(name.as_str()),
+                    ExprKind::SelfValue => Some("self"),
+                    _ => None,
+                };
+                if let Some(name) = var_name {
+                    let _ = self.env.set_deref(name, new_self);
+                }
             }
 
             return result;
