@@ -25,6 +25,8 @@ pub enum Value {
     },
     /// A hash map (dictionary).
     Map(Vec<(Value, Value)>),
+    /// A mutable reference to a variable in an outer scope.
+    MutRef(String),
     Function(FnValue),
     Unit,
 }
@@ -38,6 +40,7 @@ impl Value {
             Value::String(_) => "str",
             Value::Array(_) => "array",
             Value::Map(_) => "map",
+            Value::MutRef(_) => "ref",
             Value::Struct { name, .. } => name,
             Value::Variant { name, .. } => name,
             Value::Function(_) => "fn",
@@ -106,6 +109,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::MutRef(name) => write!(f, "&mut {name}"),
             Value::Function(_) => write!(f, "<fn>"),
             Value::Unit => write!(f, "()"),
         }
@@ -170,6 +174,44 @@ impl Env {
             }
         }
         Err(format!("Undefined variable: {name}"))
+    }
+
+    /// Get a value, transparently following MutRef chains.
+    fn get_deref(&self, name: &str) -> Option<Value> {
+        match self.get(name) {
+            Some(Value::MutRef(ref_name)) => {
+                // Follow the ref, skipping other MutRefs with the same name.
+                for scope in self.scopes.iter().rev() {
+                    if let Some(val) = scope.get(ref_name)
+                        && !matches!(val, Value::MutRef(_))
+                    {
+                        return Some(val.clone());
+                    }
+                }
+                None
+            }
+            Some(v) => Some(v.clone()),
+            None => None,
+        }
+    }
+
+    /// Set a value, transparently following MutRef chains.
+    fn set_deref(&mut self, name: &str, value: Value) -> Result<(), String> {
+        let target = match self.get(name) {
+            Some(Value::MutRef(ref_name)) => ref_name.clone(),
+            _ => name.to_string(),
+        };
+        // Find the scope with the actual (non-MutRef) value.
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(val) = scope.get(&target)
+                && !matches!(val, Value::MutRef(_))
+            {
+                scope.insert(target, value);
+                return Ok(());
+            }
+        }
+        // Fallback.
+        self.set(&target, value)
     }
 }
 
@@ -413,7 +455,7 @@ impl Interpreter {
                 Outcome::Val(Value::String(result))
             }
 
-            ExprKind::Identifier(name) => match self.env.get(name).cloned() {
+            ExprKind::Identifier(name) => match self.env.get_deref(name) {
                 Some(v) => Outcome::Val(v),
                 None => {
                     // Could be a type name used in static method calls (Vec2.new()).
@@ -715,7 +757,7 @@ impl Interpreter {
                                 if i < items.len() {
                                     return {
                                         let removed = items.remove(i);
-                                        let _ = self.env.set(var_name, Value::Array(items));
+                                        let _ = self.env.set_deref(var_name, Value::Array(items));
                                         Outcome::Val(removed)
                                     };
                                 }
@@ -746,7 +788,7 @@ impl Interpreter {
                     }
                     _ => Value::Unit,
                 };
-                let _ = self.env.set(var_name, Value::Array(items));
+                let _ = self.env.set_deref(var_name, Value::Array(items));
                 return Outcome::Val(return_val);
             }
 
@@ -783,7 +825,7 @@ impl Interpreter {
                         }
                         _ => Value::Unit,
                     };
-                    let _ = self.env.set(var_name, Value::Map(entries));
+                    let _ = self.env.set_deref(var_name, Value::Map(entries));
                     return Outcome::Val(return_val);
                 }
             }
@@ -795,16 +837,39 @@ impl Interpreter {
             if let Some(new_self) = self.last_modified_self.take()
                 && let ExprKind::Identifier(var_name) = &object.kind
             {
-                let _ = self.env.set(var_name, new_self);
+                let _ = self.env.set_deref(var_name, new_self);
             }
 
             return result;
         }
 
         let func = try_val!(self.eval_expr(callee));
+
+        // For user-defined functions, check if parameters are &mut and pass MutRefs.
         let mut arg_vals = Vec::new();
-        for arg in args {
-            arg_vals.push(try_val!(self.eval_expr(arg)));
+        if let Value::Function(FnValue::UserDefined { ref params, .. }) = func {
+            for (i, arg) in args.iter().enumerate() {
+                let is_mut_ref = params.get(i).is_some_and(|p| {
+                    matches!(
+                        &p.ty.kind,
+                        crate::ast::TypeExprKind::Reference { mutable: true, .. }
+                    )
+                });
+                if is_mut_ref {
+                    // Pass a MutRef instead of cloning the value.
+                    if let ExprKind::Identifier(var_name) = &arg.kind {
+                        arg_vals.push(Value::MutRef(var_name.clone()));
+                    } else {
+                        arg_vals.push(try_val!(self.eval_expr(arg)));
+                    }
+                } else {
+                    arg_vals.push(try_val!(self.eval_expr(arg)));
+                }
+            }
+        } else {
+            for arg in args {
+                arg_vals.push(try_val!(self.eval_expr(arg)));
+            }
         }
         self.call_value(&func, arg_vals)
     }
@@ -1515,7 +1580,7 @@ impl Interpreter {
         match &target.kind {
             ExprKind::Identifier(name) => {
                 let final_val = if let Some(bin_op) = op {
-                    if let Some(current) = self.env.get(name).cloned() {
+                    if let Some(current) = self.env.get_deref(name) {
                         eval_binop(&current, bin_op, &value).unwrap_or(value)
                     } else {
                         value
@@ -1523,7 +1588,7 @@ impl Interpreter {
                 } else {
                     value
                 };
-                let _ = self.env.set(name, final_val);
+                let _ = self.env.set_deref(name, final_val);
             }
             ExprKind::FieldAccess { object, field } => {
                 let obj_name = match &object.kind {
@@ -1532,8 +1597,7 @@ impl Interpreter {
                     _ => None,
                 };
                 if let Some(obj_name) = obj_name
-                    && let Some(Value::Struct { name, mut fields }) =
-                        self.env.get(obj_name).cloned()
+                    && let Some(Value::Struct { name, mut fields }) = self.env.get_deref(obj_name)
                 {
                     let final_val = if let Some(bin_op) = op {
                         if let Some(current) = fields.get(field) {
@@ -1545,7 +1609,7 @@ impl Interpreter {
                         value
                     };
                     fields.insert(field.clone(), final_val);
-                    let _ = self.env.set(obj_name, Value::Struct { name, fields });
+                    let _ = self.env.set_deref(obj_name, Value::Struct { name, fields });
                 }
             }
             ExprKind::Index { object, index } => {
