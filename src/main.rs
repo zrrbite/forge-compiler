@@ -32,7 +32,12 @@ fn main() {
                     output = Some(args[i].clone());
                 }
             }
-            _ => filename = Some(args[i].as_str()),
+            _ => {
+                if filename.is_none() {
+                    filename = Some(args[i].as_str());
+                }
+                // Extra positional args are available to the script via args()
+            }
         }
         i += 1;
     }

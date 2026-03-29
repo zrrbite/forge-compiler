@@ -1,0 +1,41 @@
+// compile.fg — Full self-hosted Forge compiler.
+// Usage: forge self-host/compile.fg <input.fg>
+// Generates a C file that can be compiled with: cc -std=c11 -o output output.c -lm
+
+use lexer
+use ast
+use parser
+use codegen
+
+fn main() {
+    let cli_args = args()
+    if cli_args.len() < 3 {
+        print("Usage: forge self-host/compile.fg <input.fg>")
+        print("Generates <input>.c that can be compiled with cc")
+        return
+    }
+
+    let input_path = cli_args[2]
+
+    // Read source
+    let source = File.read(input_path).unwrap()
+
+    // Lex
+    let raw_tokens = tokenize(source)
+    let tokens = collapse_newlines(raw_tokens)
+    print("Lexed {tokens.len()} tokens from {input_path}")
+
+    // Parse
+    let mut p = Parser.new(tokens)
+    let items = parse_program(p)
+    print("Parsed {items.len()} items")
+
+    // Generate C
+    let c_code = generate(items)
+
+    // Write C file
+    let c_path = input_path + ".c"
+    File.write(c_path, c_code).unwrap()
+    print("Generated: {c_path}")
+    print("Compile with: cc -std=c11 -o output {c_path} -lm")
+}
