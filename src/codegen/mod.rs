@@ -1205,32 +1205,121 @@ impl<'ctx> Codegen<'ctx> {
         let val = self.compile_expr(scrutinee, function)?;
         let merge_bb = self.context.append_basic_block(function, "match_merge");
 
-        // For now, just compile the wildcard/last arm.
-        // A proper implementation would chain conditional branches.
-        if let Some(arm) = arms.last() {
-            self.push_scope();
-            // If it's an identifier pattern, bind it.
-            if let HirPatternKind::Identifier(name) = &arm.pattern.kind {
-                let alloca = self.create_alloca(name, val.get_type(), function);
-                self.builder.build_store(alloca, val).unwrap();
-                self.define_var(name.clone(), alloca, val.get_type());
+        // For integer match: chain of compare-and-branch.
+        // For wildcard/identifier: unconditional fallthrough.
+        let mut arm_results: Vec<(BasicValueEnum<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> =
+            Vec::new();
+
+        for (i, arm) in arms.iter().enumerate() {
+            let is_last = i == arms.len() - 1;
+
+            match &arm.pattern.kind {
+                HirPatternKind::Literal(lit_expr) => {
+                    let arm_bb = self.context.append_basic_block(function, "match_arm");
+                    let next_bb = if is_last {
+                        merge_bb
+                    } else {
+                        self.context.append_basic_block(function, "match_next")
+                    };
+
+                    // Compare scrutinee with literal.
+                    let lit_val = self.compile_expr(lit_expr, function)?;
+                    if val.is_int_value() && lit_val.is_int_value() {
+                        let cmp = self
+                            .builder
+                            .build_int_compare(
+                                IntPredicate::EQ,
+                                val.into_int_value(),
+                                lit_val.into_int_value(),
+                                "match_cmp",
+                            )
+                            .unwrap();
+                        self.builder
+                            .build_conditional_branch(cmp, arm_bb, next_bb)
+                            .unwrap();
+                    } else {
+                        // Non-integer: just branch to the arm (fallback).
+                        self.builder.build_unconditional_branch(arm_bb).unwrap();
+                    }
+
+                    self.builder.position_at_end(arm_bb);
+                    self.push_scope();
+                    let result = self.compile_expr(&arm.body, function)?;
+                    self.pop_scope();
+                    let arm_end = self.builder.get_insert_block().unwrap();
+                    if arm_end.get_terminator().is_none() {
+                        self.builder.build_unconditional_branch(merge_bb).unwrap();
+                    }
+                    arm_results.push((result, arm_end));
+
+                    if !is_last {
+                        self.builder.position_at_end(next_bb);
+                    }
+                }
+                HirPatternKind::Wildcard => {
+                    let arm_bb = self.context.append_basic_block(function, "match_wild");
+                    self.builder.build_unconditional_branch(arm_bb).unwrap();
+                    self.builder.position_at_end(arm_bb);
+                    self.push_scope();
+                    let result = self.compile_expr(&arm.body, function)?;
+                    self.pop_scope();
+                    let arm_end = self.builder.get_insert_block().unwrap();
+                    if arm_end.get_terminator().is_none() {
+                        self.builder.build_unconditional_branch(merge_bb).unwrap();
+                    }
+                    arm_results.push((result, arm_end));
+                }
+                HirPatternKind::Identifier(name) => {
+                    let arm_bb = self.context.append_basic_block(function, "match_bind");
+                    self.builder.build_unconditional_branch(arm_bb).unwrap();
+                    self.builder.position_at_end(arm_bb);
+                    self.push_scope();
+                    let alloca = self.create_alloca(name, val.get_type(), function);
+                    self.builder.build_store(alloca, val).unwrap();
+                    self.define_var(name.clone(), alloca, val.get_type());
+                    let result = self.compile_expr(&arm.body, function)?;
+                    self.pop_scope();
+                    let arm_end = self.builder.get_insert_block().unwrap();
+                    if arm_end.get_terminator().is_none() {
+                        self.builder.build_unconditional_branch(merge_bb).unwrap();
+                    }
+                    arm_results.push((result, arm_end));
+                }
+                HirPatternKind::Variant { .. } => {
+                    // Variant patterns in codegen: for now, treat as wildcard.
+                    let arm_bb = self.context.append_basic_block(function, "match_variant");
+                    self.builder.build_unconditional_branch(arm_bb).unwrap();
+                    self.builder.position_at_end(arm_bb);
+                    self.push_scope();
+                    let result = self.compile_expr(&arm.body, function)?;
+                    self.pop_scope();
+                    let arm_end = self.builder.get_insert_block().unwrap();
+                    if arm_end.get_terminator().is_none() {
+                        self.builder.build_unconditional_branch(merge_bb).unwrap();
+                    }
+                    arm_results.push((result, arm_end));
+                }
             }
-            let result = self.compile_expr(&arm.body, function)?;
-            self.pop_scope();
-            if self
-                .builder
-                .get_insert_block()
-                .unwrap()
-                .get_terminator()
-                .is_none()
-            {
-                self.builder.build_unconditional_branch(merge_bb).unwrap();
-            }
-            self.builder.position_at_end(merge_bb);
-            return Ok(result);
         }
 
         self.builder.position_at_end(merge_bb);
+
+        // Build phi node if we have results.
+        if let Some((first_val, _)) = arm_results.first()
+            && arm_results
+                .iter()
+                .all(|(v, _)| v.get_type() == first_val.get_type())
+        {
+            let phi = self
+                .builder
+                .build_phi(first_val.get_type(), "match_result")
+                .unwrap();
+            for (val, bb) in &arm_results {
+                phi.add_incoming(&[(val, *bb)]);
+            }
+            return Ok(phi.as_basic_value());
+        }
+
         Ok(self.context.i64_type().const_int(0, false).into())
     }
 
