@@ -21,7 +21,8 @@
       "Bash(llvm-config:*)",
       "Bash(chmod:*)",
       "Bash(git clang-format:*)",
-      "Bash(echo:*)"
+      "Bash(git checkout:*)",
+      "Bash(git stash:*)"
     ]
   }
 }
