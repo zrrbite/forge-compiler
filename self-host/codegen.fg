@@ -237,6 +237,7 @@ fn generate(items: [Item]) -> str {
     gen = gen.emit("#include <stdbool.h>\n")
     gen = gen.emit("#include <string.h>\n")
     gen = gen.emit("#include <math.h>\n")
+    gen = gen.emit("#include <ctype.h>\n")
     gen = gen.emit("\n")
 
     // Emit runtime helpers
@@ -260,6 +261,20 @@ fn generate(items: [Item]) -> str {
     gen = gen.emit("\}\n")
     gen = gen.emit("static char* forge_bool_to_str(bool v) \{\n")
     gen = gen.emit("    return v ? \"true\" : \"false\";\n")
+    gen = gen.emit("\}\n\n")
+
+    gen = gen.emit("static char* forge_char_at(const char* s, int64_t i) \{\n")
+    gen = gen.emit("    char* r = malloc(2);\n")
+    gen = gen.emit("    r[0] = s[i];\n")
+    gen = gen.emit("    r[1] = 0;\n")
+    gen = gen.emit("    return r;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static char* forge_substring(const char* s, int64_t start, int64_t end) \{\n")
+    gen = gen.emit("    int64_t len = end - start;\n")
+    gen = gen.emit("    char* r = malloc(len + 1);\n")
+    gen = gen.emit("    memcpy(r, s + start, len);\n")
+    gen = gen.emit("    r[len] = 0;\n")
+    gen = gen.emit("    return r;\n")
     gen = gen.emit("\}\n\n")
 
     // --- Array runtime ---
@@ -556,6 +571,35 @@ fn gen_expr(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
             g = g.emit(", ")
             g = gen_expr(g, expr.right[0], type_map)
             g = g.emit(")")
+        } else if (resolved_type == "const char*" || resolved_type == "") && (expr.value == "==" || expr.value == "!=") {
+            // String comparison: use strcmp
+            let right_type = infer_expr_type(expr.right[0], type_map)
+            if resolved_type == "const char*" || right_type == "const char*" {
+                if expr.value == "==" {
+                    g = g.emit("(strcmp(")
+                    g = gen_expr(g, expr.left[0], type_map)
+                    g = g.emit(", ")
+                    g = gen_expr(g, expr.right[0], type_map)
+                    g = g.emit(") == 0)")
+                } else {
+                    g = g.emit("(strcmp(")
+                    g = gen_expr(g, expr.left[0], type_map)
+                    g = g.emit(", ")
+                    g = gen_expr(g, expr.right[0], type_map)
+                    g = g.emit(") != 0)")
+                }
+            } else {
+                g = g.emit("(")
+                g = gen_expr(g, expr.left[0], type_map)
+                g = g.emit(" {expr.value} ")
+                g = gen_expr(g, expr.right[0], type_map)
+            }
+        } else if resolved_type == "const char*" && expr.value == "+" {
+            // String concatenation
+            g = g.emit("forge_str_concat(")
+            g = gen_expr(g, expr.left[0], type_map)
+            g = g.emit(", ")
+            g = gen_expr(g, expr.right[0], type_map)
         } else {
             g = g.emit("(")
             g = gen_expr(g, expr.left[0], type_map)
@@ -707,18 +751,54 @@ fn is_print_expr(expr: Expr) -> bool {
 }
 
 fn is_upper(name: str) -> bool {
+    if name.len() == 0 { return false }
     let fc = name.char_at(0)
     fc == fc.to_upper()
 }
 
 fn gen_method_call(gen: CodeGen, obj: Expr, method: str, args: [Expr], type_map: str) -> CodeGen {
     let mut g = gen
-    if method == "sqrt" {
+    if method == "char_at" {
+        // str.char_at(i) -> forge_char_at(str, i) returning a single-char string
+        g = g.emit("forge_char_at(")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(", ")
+        if args.len() > 0 {
+            g = gen_expr(g, args[0], type_map)
+        }
+        g = g.emit(")")
+    } else if method == "is_digit" {
+        // Works on single-char strings
+        g = g.emit("isdigit((unsigned char)")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit("[0])")
+    } else if method == "is_alpha" {
+        g = g.emit("isalpha((unsigned char)")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit("[0])")
+    } else if method == "is_whitespace" {
+        g = g.emit("isspace((unsigned char)")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit("[0])")
+    } else if method == "sqrt" {
         g = g.emit("sqrt(")
         g = gen_expr(g, obj, type_map)
         g = g.emit(")")
     } else if method == "abs" {
         g = g.emit("fabs(")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(")")
+    } else if method == "substring" {
+        // str.substring(start, end) -> forge_substring(str, start, end)
+        g = g.emit("forge_substring(")
+        g = gen_expr(g, obj, type_map)
+        for arg in args {
+            g = g.emit(", ")
+            g = gen_expr(g, arg, type_map)
+        }
+        g = g.emit(")")
+    } else if method == "len" && infer_expr_type(obj, type_map) == "const char*" {
+        g = g.emit("(int64_t)strlen(")
         g = gen_expr(g, obj, type_map)
         g = g.emit(")")
     } else if method == "len" && infer_expr_type(obj, type_map).starts_with("ForgeArray") {
@@ -844,7 +924,7 @@ fn gen_if(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
     g.indent = g.indent + 1
     let mut i = 0
     while i < expr.body.len() {
-        g = gen_stmt(g, expr.body[i], i == expr.body.len() - 1, "auto", type_map)
+        g = gen_stmt(g, expr.body[i], false, "void", type_map)
         i = i + 1
     }
     g.indent = g.indent - 1
@@ -860,7 +940,7 @@ fn gen_if(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
             g.indent = g.indent + 1
             let mut j = 0
             while j < expr.else_body.len() {
-                g = gen_stmt(g, expr.else_body[j], j == expr.else_body.len() - 1, "auto", type_map)
+                g = gen_stmt(g, expr.else_body[j], false, "void", type_map)
                 j = j + 1
             }
             g.indent = g.indent - 1
@@ -1294,7 +1374,17 @@ fn infer_c_type_with_map(expr: Expr, type_map: str) -> str {
                 if method_name == "push" { obj_type }
                 else if method_name == "len" { "int64_t" }
                 else { "int64_t" }
-            } else if obj_type != "" && obj_type != "const char*" && obj_type != "int64_t" && obj_type != "int32_t" && obj_type != "double" && obj_type != "float" && obj_type != "bool" {
+            } else if obj_type == "const char*" {
+                // String methods
+                if method_name == "char_at" { "const char*" }
+                else if method_name == "substring" { "const char*" }
+                else if method_name == "len" { "int64_t" }
+                else if method_name == "is_digit" || method_name == "is_alpha" || method_name == "is_whitespace" { "bool" }
+                else { "const char*" }
+            } else if obj_type == "char" {
+                if method_name == "is_digit" || method_name == "is_alpha" || method_name == "is_whitespace" { "bool" }
+                else { "int64_t" }
+            } else if obj_type != "" && obj_type != "int64_t" && obj_type != "int32_t" && obj_type != "double" && obj_type != "float" && obj_type != "bool" {
                 // Method on a struct — try to guess from method name
                 if method_name == "len" || method_name == "size" || method_name == "count" { "int64_t" }
                 else { "double" }
