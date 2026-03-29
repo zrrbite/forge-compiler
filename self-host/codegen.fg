@@ -286,6 +286,18 @@ fn generate(items: [Item]) -> str {
     gen = gen.emit("\}\n")
     gen = gen.emit("static void* forge_array_get(ForgeArray* a, int64_t idx) \{\n")
     gen = gen.emit("    return (char*)a->data + idx * a->elem_size;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static char* forge_array_i32_to_str(ForgeArray a) \{\n")
+    gen = gen.emit("    char* buf = malloc(a.len * 12 + 3);\n")
+    gen = gen.emit("    int pos = 0;\n")
+    gen = gen.emit("    pos += sprintf(buf + pos, \"[\");\n")
+    gen = gen.emit("    for (int64_t i = 0; i < a.len; i++) \{\n")
+    gen = gen.emit("        if (i > 0) pos += sprintf(buf + pos, \", \");\n")
+    gen = gen.emit("        int32_t v = *(int32_t*)forge_array_get(&a, i);\n")
+    gen = gen.emit("        pos += sprintf(buf + pos, \"%d\", v);\n")
+    gen = gen.emit("    \}\n")
+    gen = gen.emit("    sprintf(buf + pos, \"]\");\n")
+    gen = gen.emit("    return buf;\n")
     gen = gen.emit("\}\n\n")
 
     // Forward-declare structs
@@ -472,10 +484,17 @@ fn gen_stmt(gen: CodeGen, stmt: Stmt, is_last: bool, ret_type: str, type_map: st
     } else if stmt.kind == "expr" {
         let is_print_call = is_print_expr(stmt.expr)
         if is_last && ret_type != "void" && ret_type != "int" && stmt.expr.kind != "assign" && stmt.expr.kind != "while" && stmt.expr.kind != "for" && !is_print_call {
-            g = g.emit_indent()
-            g = g.emit("return ")
-            g = gen_expr(g, stmt.expr, type_map)
-            g = g.emit(";\n")
+            if stmt.expr.kind == "if" {
+                // Emit if/else with returns in each branch
+                g = g.emit_indent()
+                g = gen_return_if(g, stmt.expr, type_map)
+                g = g.emit("\n")
+            } else {
+                g = g.emit_indent()
+                g = g.emit("return ")
+                g = gen_expr(g, stmt.expr, type_map)
+                g = g.emit(";\n")
+            }
         } else {
             g = g.emit_indent()
             g = gen_expr(g, stmt.expr, type_map)
@@ -852,6 +871,67 @@ fn gen_if(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
     g
 }
 
+// Emit if/else as a return statement — each branch returns its last expression
+fn gen_return_if(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
+    let mut g = gen
+    g = g.emit("if (")
+    g = gen_expr(g, expr.left[0], type_map)
+    g = g.emit(") \{\n")
+    g.indent = g.indent + 1
+    // Then branch — return last expression
+    let mut i = 0
+    while i < expr.body.len() {
+        if i == expr.body.len() - 1 {
+            let last_stmt = expr.body[i]
+            if last_stmt.kind == "expr" {
+                g = g.emit_indent()
+                g = g.emit("return ")
+                g = gen_expr(g, last_stmt.expr, type_map)
+                g = g.emit(";\n")
+            } else {
+                g = gen_stmt(g, last_stmt, false, "void", type_map)
+            }
+        } else {
+            g = gen_stmt(g, expr.body[i], false, "void", type_map)
+        }
+        i = i + 1
+    }
+    g.indent = g.indent - 1
+    g = g.emit_indent()
+    g = g.emit("\}")
+    if expr.else_body.len() > 0 {
+        let first_else = expr.else_body[0]
+        if first_else.kind == "expr" && first_else.expr.kind == "if" {
+            g = g.emit(" else ")
+            g = gen_return_if(g, first_else.expr, type_map)
+        } else {
+            g = g.emit(" else \{\n")
+            g.indent = g.indent + 1
+            let mut j = 0
+            while j < expr.else_body.len() {
+                if j == expr.else_body.len() - 1 {
+                    let last_stmt = expr.else_body[j]
+                    if last_stmt.kind == "expr" {
+                        g = g.emit_indent()
+                        g = g.emit("return ")
+                        g = gen_expr(g, last_stmt.expr, type_map)
+                        g = g.emit(";\n")
+                    } else {
+                        g = gen_stmt(g, last_stmt, false, "void", type_map)
+                    }
+                } else {
+                    g = gen_stmt(g, expr.else_body[j], false, "void", type_map)
+                }
+                j = j + 1
+            }
+            g.indent = g.indent - 1
+            g = g.emit_indent()
+            g = g.emit("\}")
+        }
+    }
+    g
+}
+
 fn gen_while(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
     let mut g = gen
     g = g.emit("while (")
@@ -1000,6 +1080,8 @@ fn gen_interp_part(gen: CodeGen, part: str, type_map: str) -> CodeGen {
             g = g.emit("forge_f64_to_str((double)" + content + ")")
         } else if var_type == "bool" {
             g = g.emit("forge_bool_to_str(" + content + ")")
+        } else if var_type.starts_with("ForgeArray") {
+            g = g.emit("forge_array_i32_to_str(" + content + ")")
         } else if content.contains("(") {
             // Method call in interpolation — rewrite and wrap with appropriate to_str
             let rewritten = rewrite_interp_expr(content, type_map)
@@ -1010,6 +1092,8 @@ fn gen_interp_part(gen: CodeGen, part: str, type_map: str) -> CodeGen {
                 g = g.emit("forge_i64_to_str((int64_t)" + rewritten + ")")
             } else if ret_hint == "bool" {
                 g = g.emit("forge_bool_to_str(" + rewritten + ")")
+            } else if ret_hint == "ForgeArray" || ret_hint.starts_with("ForgeArray") {
+                g = g.emit("forge_array_i32_to_str(" + rewritten + ")")
             } else {
                 g = g.emit("forge_f64_to_str(" + rewritten + ")")
             }
@@ -1127,9 +1211,11 @@ fn guess_interp_return_type(content: str, type_map: str) -> str {
 
     // Known methods that return specific types
     if method == "len" || method == "size" || method == "count" { return "int64_t" }
+    if method == "peek" { return "int64_t" }
     if method == "to_str" || method == "to_string" || method == "describe" || method == "name" { return "const char*" }
     if method == "length" || method == "sqrt" || method == "abs" { return "double" }
     if method == "is_empty" || method == "contains" || method == "starts_with" { return "bool" }
+    if method == "to_array" { return "ForgeArray" }
 
     // Check if the method is likely a getter returning the object's field type
     // Default: double (most numeric methods return double)
