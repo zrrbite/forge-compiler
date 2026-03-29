@@ -1,24 +1,26 @@
 {
-  "permissions": {
-    "allow": [
-      "Bash(cargo *)",
-      "Bash(source *)",
-      "Bash(git *)",
-      "Bash(gh *)",
-      "Bash(ls *)",
-      "Bash(mkdir *)",
-      "Bash(chmod *)",
-      "Bash(cat *)",
-      "Bash(curl *)",
-      "Bash(which *)",
-      "Read",
-      "Write",
-      "Edit",
-      "Glob",
-      "Grep",
-      "Bash(source:*)",
-      "Bash(cargo test:*)",
-      "Bash(llvm-config:*)"
-    ]
-  }
+	"permissions": {
+		"allow": [
+			"Bash(cargo *)",
+			"Bash(source *)",
+			"Bash(git *)",
+			"Bash(gh *)",
+			"Bash(ls *)",
+			"Bash(mkdir *)",
+			"Bash(chmod *)",
+			"Bash(cat *)",
+			"Bash(curl *)",
+			"Bash(which *)",
+			"Read",
+			"Write",
+			"Edit",
+			"Glob",
+			"Grep",
+			"Bash(source:*)",
+			"Bash(cargo test:*)",
+			"Bash(llvm-config:*)",
+			"Bash(chmod:*)",
+			"Bash(git clang-format:*)"
+		]
+	}
 }

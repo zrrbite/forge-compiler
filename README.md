@@ -275,6 +275,29 @@ Forge is a working language with an interpreter and LLVM compilation backend.
 | Module System | Complete — use declarations, multi-file programs |
 | Test Suite | 307 tests across all phases |
 
+## Performance
+
+Forge has two execution modes:
+
+- **Interpreted** (`forge file.fg`) — runs your code directly via a tree-walk
+  interpreter. Great for development. Like Python.
+- **Compiled** (`forge --compile file.fg`) — translates to LLVM IR and produces
+  a native binary. For production. Like C.
+
+Benchmark: recursive fibonacci(35) — same algorithm, same result (9,227,465):
+
+| Language | Compile | Runtime | Binary Size |
+|----------|---------|---------|-------------|
+| **Forge (compiled)** | 139ms | 63ms | 15 KB |
+| C (gcc -O2) | 137ms | 24ms | 15 KB |
+| Rust (rustc -O) | 64ms | 32ms | 3.9 MB |
+| **Forge (interpreted)** | — | 53s | — |
+
+Forge compiled is 2.6x slower than C — respectable for a compiler with no
+optimization passes yet. Binary size matches C exactly. See
+[detailed comparisons](docs/10-comparisons.md) for syntax and feature analysis
+across Forge, Rust, C++, Zig, and Go.
+
 ## Documentation
 
 Detailed documentation is in the `docs/` directory:
@@ -288,6 +311,7 @@ Detailed documentation is in the `docs/` directory:
 - [Borrow Checker](docs/07-borrowck.md) — ownership and borrowing
 - [Comptime](docs/08-comptime.md) — compile-time evaluation
 - [Standard Library](docs/09-stdlib.md) — built-in functions
+- [Comparisons](docs/10-comparisons.md) — benchmarks and syntax comparisons vs Rust, C++, Zig, Go
 
 ## Building from Source
 
