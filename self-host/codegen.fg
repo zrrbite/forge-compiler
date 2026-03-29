@@ -52,7 +52,50 @@ fn c_type(ty: str) -> str {
     else if ty == "usize" { "size_t" }
     else if ty == "isize" { "ptrdiff_t" }
     else if ty == "" { "void" }
+    else if is_array_type(ty) {
+        // Store as ForgeArray<elem_c_type> for the type map, emit as ForgeArray in C
+        let elem = c_type(array_elem_type(ty))
+        "ForgeArray<" + elem + ">"
+    }
     else { ty }
+}
+
+// Get the C type name for code emission (strips generics from ForgeArray<T>)
+fn c_emit_type(ty: str) -> str {
+    if ty.starts_with("ForgeArray") { "ForgeArray" }
+    else { ty }
+}
+
+// Extract element type from "ForgeArray<int32_t>" -> "int32_t"
+fn forge_array_elem(ty: str) -> str {
+    if ty.starts_with("ForgeArray<") {
+        ty.substring(11, ty.len() - 1)
+    } else {
+        "int64_t"
+    }
+}
+
+// Check if a type string is an array type like "[i32]"
+fn is_array_type(ty: str) -> bool {
+    if ty.len() >= 3 {
+        ty.char_at(0) == "["
+    } else {
+        false
+    }
+}
+
+// Extract element type from "[i32]" -> "i32", "[str]" -> "str"
+fn array_elem_type(ty: str) -> str {
+    if is_array_type(ty) {
+        ty.substring(1, ty.len() - 1)
+    } else {
+        ""
+    }
+}
+
+// Get the C element type for an array type string
+fn c_array_elem_type(ty: str) -> str {
+    c_type(array_elem_type(ty))
 }
 
 // ---- Pre-collect variable types from AST ----
@@ -95,6 +138,12 @@ fn collect_expr_types(expr: Expr, result: str) -> str {
         if iter.kind == "binop" && iter.value == ".." {
             if r.len() > 0 { r = r + "," }
             r = r + expr.value + ":int64_t"
+        } else {
+            // Array iteration — try to infer element type from the iterable
+            let iter_type = infer_expr_type(iter, r)
+            let elem_t = if iter_type.starts_with("ForgeArray<") { forge_array_elem(iter_type) } else { "int64_t" }
+            if r.len() > 0 { r = r + "," }
+            r = r + expr.value + ":" + elem_t
         }
         // Recurse into for-loop body
         for stmt in expr.body {
@@ -118,6 +167,20 @@ fn collect_expr_types(expr: Expr, result: str) -> str {
         }
     }
     r
+}
+
+// Build struct field type entries: "StructName.field1:type1,StructName.field2:type2,..."
+fn collect_struct_field_types(items: [Item]) -> str {
+    let mut result = ""
+    for item in items {
+        if item.kind == "struct" {
+            for field in item.fields {
+                if result.len() > 0 { result = result + "," }
+                result = result + item.name + "." + field.name + ":" + c_type(field.ty)
+            }
+        }
+    }
+    result
 }
 
 fn lookup_type(type_map: str, name: str) -> str {
@@ -199,6 +262,32 @@ fn generate(items: [Item]) -> str {
     gen = gen.emit("    return v ? \"true\" : \"false\";\n")
     gen = gen.emit("\}\n\n")
 
+    // --- Array runtime ---
+    gen = gen.emit("typedef struct \{\n")
+    gen = gen.emit("    void* data;\n")
+    gen = gen.emit("    int64_t len;\n")
+    gen = gen.emit("    int64_t cap;\n")
+    gen = gen.emit("    int64_t elem_size;\n")
+    gen = gen.emit("\} ForgeArray;\n\n")
+    gen = gen.emit("static ForgeArray forge_array_new(int64_t elem_size) \{\n")
+    gen = gen.emit("    ForgeArray a = \{NULL, 0, 0, elem_size\};\n")
+    gen = gen.emit("    return a;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static ForgeArray forge_array_push(ForgeArray a, const void* elem) \{\n")
+    gen = gen.emit("    if (a.len >= a.cap) \{\n")
+    gen = gen.emit("        int64_t new_cap = a.cap == 0 ? 4 : a.cap * 2;\n")
+    gen = gen.emit("        void* new_data = realloc(a.data, new_cap * a.elem_size);\n")
+    gen = gen.emit("        a.data = new_data;\n")
+    gen = gen.emit("        a.cap = new_cap;\n")
+    gen = gen.emit("    \}\n")
+    gen = gen.emit("    memcpy((char*)a.data + a.len * a.elem_size, elem, a.elem_size);\n")
+    gen = gen.emit("    a.len++;\n")
+    gen = gen.emit("    return a;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static void* forge_array_get(ForgeArray* a, int64_t idx) \{\n")
+    gen = gen.emit("    return (char*)a->data + idx * a->elem_size;\n")
+    gen = gen.emit("\}\n\n")
+
     // Forward-declare structs
     for item in items {
         if item.kind == "struct" {
@@ -229,10 +318,13 @@ fn generate(items: [Item]) -> str {
     }
     gen = gen.emit("\n")
 
+    // Build struct field type map
+    let field_types = collect_struct_field_types(items)
+
     // Emit function definitions
     for item in items {
         if item.kind == "fn" {
-            gen = gen_fn(gen, "", item)
+            gen = gen_fn(gen, "", item, field_types)
         }
     }
 
@@ -240,7 +332,7 @@ fn generate(items: [Item]) -> str {
     for item in items {
         if item.kind == "impl" {
             for method in item.methods {
-                gen = gen_fn(gen, item.name, method)
+                gen = gen_fn(gen, item.name, method, field_types)
             }
         }
     }
@@ -254,7 +346,7 @@ fn gen_struct(gen: CodeGen, item: Item) -> CodeGen {
     let mut g = gen
     g = g.emit("struct {item.name} \{\n")
     for field in item.fields {
-        g = g.emit("    {c_type(field.ty)} {field.name};\n")
+        g = g.emit("    {c_emit_type(c_type(field.ty))} {field.name};\n")
     }
     g = g.emit("\};\n\n")
     g
@@ -267,7 +359,7 @@ fn gen_fn_forward(gen: CodeGen, self_type: str, item: Item) -> CodeGen {
     let mut ret = c_type(item.return_type)
     let name = if self_type == "" { item.name } else { self_type + "_" + item.name }
     if name == "main" { ret = "int" }
-    g = g.emit("{ret} {name}(")
+    g = g.emit(c_emit_type(ret) + " " + name + "(")
     if name == "main" {
         g = g.emit("void")
     } else {
@@ -279,13 +371,13 @@ fn gen_fn_forward(gen: CodeGen, self_type: str, item: Item) -> CodeGen {
 
 // ---- Function definition ----
 
-fn gen_fn(gen: CodeGen, self_type: str, item: Item) -> CodeGen {
+fn gen_fn(gen: CodeGen, self_type: str, item: Item, field_types: str) -> CodeGen {
     let mut g = gen
     let mut ret = c_type(item.return_type)
     let mut name = if self_type == "" { item.name } else { self_type + "_" + item.name }
     let is_main = name == "main"
     if is_main { ret = "int" }
-    g = g.emit("{ret} {name}(")
+    g = g.emit(c_emit_type(ret) + " " + name + "(")
     if is_main {
         g = g.emit("void")
     } else {
@@ -295,11 +387,15 @@ fn gen_fn(gen: CodeGen, self_type: str, item: Item) -> CodeGen {
     g.indent = g.indent + 1
 
     // Pre-collect variable types for this function
-    // Include self_type so self method calls can be resolved
+    // Include self_type and struct field types
     let mut type_map = collect_fn_types(item.params, item.body)
     if self_type != "" {
         if type_map.len() > 0 { type_map = type_map + "," }
         type_map = type_map + "__self_type:" + self_type
+    }
+    if field_types.len() > 0 {
+        if type_map.len() > 0 { type_map = type_map + "," }
+        type_map = type_map + field_types
     }
 
     // Emit body statements
@@ -335,9 +431,9 @@ fn gen_param_list(gen: CodeGen, self_type: str, params: [Param]) -> CodeGen {
             let ty = param.ty
             if ty.starts_with("&mut ") {
                 let inner = ty.substring(5, ty.len())
-                g = g.emit("{c_type(inner)}* {param.name}")
+                g = g.emit(c_emit_type(c_type(inner)) + "* " + param.name)
             } else {
-                g = g.emit("{c_type(ty)} {param.name}")
+                g = g.emit(c_emit_type(c_type(ty)) + " " + param.name)
             }
         }
     }
@@ -354,7 +450,7 @@ fn gen_stmt(gen: CodeGen, stmt: Stmt, is_last: bool, ret_type: str, type_map: st
     if stmt.kind == "let" {
         g = g.emit_indent()
         let ty = if stmt.ty != "" { c_type(stmt.ty) } else { infer_c_type_with_map(stmt.expr, type_map) }
-        g = g.emit("{ty} {stmt.name}")
+        g = g.emit(c_emit_type(ty) + " " + stmt.name)
         if stmt.expr.kind != "none" {
             g = g.emit(" = ")
             g = gen_expr(g, stmt.expr, type_map)
@@ -458,10 +554,21 @@ fn gen_expr(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
         g = gen_expr(g, expr.left[0], type_map)
         g = g.emit(".{expr.value}")
     } else if expr.kind == "index" {
-        g = gen_expr(g, expr.left[0], type_map)
-        g = g.emit("[")
-        g = gen_expr(g, expr.right[0], type_map)
-        g = g.emit("]")
+        // Check if indexing into a ForgeArray
+        let arr_type = infer_expr_type(expr.left[0], type_map)
+        if arr_type.starts_with("ForgeArray<") {
+            let elem_t = forge_array_elem(arr_type)
+            g = g.emit("*(" + elem_t + "*)forge_array_get(&")
+            g = gen_expr(g, expr.left[0], type_map)
+            g = g.emit(", ")
+            g = gen_expr(g, expr.right[0], type_map)
+            g = g.emit(")")
+        } else {
+            g = gen_expr(g, expr.left[0], type_map)
+            g = g.emit("[")
+            g = gen_expr(g, expr.right[0], type_map)
+            g = g.emit("]")
+        }
     } else if expr.kind == "assign" {
         g = gen_expr(g, expr.left[0], type_map)
         g = g.emit(" = ")
@@ -487,7 +594,41 @@ fn gen_expr(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
     } else if expr.kind == "struct_lit" {
         g = gen_struct_lit(g, expr, type_map)
     } else if expr.kind == "array" {
-        g = g.emit("/* array */0")
+        if expr.args.len() == 0 {
+            // Empty array — need to know elem size. Default to int64_t.
+            g = g.emit("forge_array_new(sizeof(int64_t))")
+        } else {
+            // Non-empty array literal [a, b, c]
+            // Infer element type from first element
+            let elem_ct = infer_c_type_with_map(expr.args[0], type_map)
+            let elem_ct = c_emit_type(elem_ct)
+            // Build up: push(push(push(new, &a), &b), &c)
+            let mut i = 0
+            while i < expr.args.len() {
+                g = g.emit("forge_array_push(")
+                i = i + 1
+            }
+            g = g.emit("forge_array_new(sizeof(" + elem_ct + "))")
+            let mut j = 0
+            while j < expr.args.len() {
+                let arg = expr.args[j]
+                if arg.kind == "ident" {
+                    // For identifiers, just take address directly
+                    g = g.emit(", &" + arg.value + ")")
+                } else if arg.kind == "int" || arg.kind == "float" {
+                    // For literals, use compound literal
+                    g = g.emit(", &(" + elem_ct + ")\{")
+                    g = gen_expr(g, arg, type_map)
+                    g = g.emit("\})")
+                } else {
+                    // For complex expressions, use compound literal
+                    g = g.emit(", &(" + elem_ct + ")\{")
+                    g = gen_expr(g, arg, type_map)
+                    g = g.emit("\})")
+                }
+                j = j + 1
+            }
+        }
     } else if expr.kind == "none" {
         // nothing
     }
@@ -561,8 +702,19 @@ fn gen_method_call(gen: CodeGen, obj: Expr, method: str, args: [Expr], type_map:
         g = g.emit("fabs(")
         g = gen_expr(g, obj, type_map)
         g = g.emit(")")
-    } else if method == "len" {
-        g = g.emit("/* .len() */ 0")
+    } else if method == "len" && infer_expr_type(obj, type_map).starts_with("ForgeArray") {
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(".len")
+    } else if method == "push" && infer_expr_type(obj, type_map).starts_with("ForgeArray<") {
+        let obj_type = infer_expr_type(obj, type_map)
+        let elem_t = forge_array_elem(obj_type)
+        g = g.emit("forge_array_push(")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(", &(" + elem_t + ")\{")
+        if args.len() > 0 {
+            g = gen_expr(g, args[0], type_map)
+        }
+        g = g.emit("\})")
     } else if method == "to_str" || method == "to_string" {
         g = g.emit("forge_i64_to_str(")
         g = gen_expr(g, obj, type_map)
@@ -575,8 +727,8 @@ fn gen_method_call(gen: CodeGen, obj: Expr, method: str, args: [Expr], type_map:
             let st = lookup_type(type_map, "__self_type")
             if st != "" { obj_type = st }
         }
-        if obj_type != "" && obj_type != "const char*" && obj_type != "int64_t" && obj_type != "int32_t" && obj_type != "double" && obj_type != "bool" {
-            g = g.emit(obj_type + "_" + method + "(")
+        if obj_type != "" && obj_type != "const char*" && obj_type != "int64_t" && obj_type != "int32_t" && obj_type != "double" && obj_type != "bool" && !obj_type.starts_with("ForgeArray") {
+            g = g.emit(c_emit_type(obj_type) + "_" + method + "(")
             g = gen_expr(g, obj, type_map)
             for arg in args {
                 g = g.emit(", ")
@@ -595,6 +747,20 @@ fn infer_expr_type(expr: Expr, type_map: str) -> str {
     if expr.kind == "ident" {
         if expr.value == "self" { "Self" }
         else { lookup_type(type_map, expr.value) }
+    } else if expr.kind == "field" {
+        // Field access: obj.field — resolve obj type, then look up StructType.field
+        let obj_type = infer_expr_type(expr.left[0], type_map)
+        let mut resolved = obj_type
+        if resolved == "Self" {
+            let st = lookup_type(type_map, "__self_type")
+            if st != "" { resolved = st }
+        }
+        if resolved != "" {
+            let field_key = resolved + "." + expr.value
+            let ft = lookup_type(type_map, field_key)
+            if ft != "" { ft }
+            else { "" }
+        } else { "" }
     } else if expr.kind == "int" { "int64_t" }
     else if expr.kind == "float" { "double" }
     else if expr.kind == "bool" { "bool" }
@@ -722,6 +888,8 @@ fn gen_for(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
         g = g.emit("\}")
     } else {
         // Array iteration — emit as indexed loop over a ForgeArray
+        let iter_type = infer_expr_type(iter, type_map)
+        let elem_t = if iter_type.starts_with("ForgeArray<") { forge_array_elem(iter_type) } else { "int64_t" }
         g = g.emit("\{\n")
         g.indent = g.indent + 1
         g = g.emit_indent()
@@ -731,9 +899,8 @@ fn gen_for(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
         g = g.emit_indent()
         g = g.emit("for (int64_t _i = 0; _i < _iter.len; _i++) \{\n")
         g.indent = g.indent + 1
-        // Declare the loop variable — we don't know the element type, use void*
         g = g.emit_indent()
-        g = g.emit("void* " + binding + " = forge_array_get(&_iter, _i);\n")
+        g = g.emit(elem_t + " " + binding + " = *(" + elem_t + "*)forge_array_get(&_iter, _i);\n")
         for stmt in expr.body {
             g = gen_stmt(g, stmt, false, "void", type_map)
         }
@@ -847,17 +1014,25 @@ fn gen_interp_part(gen: CodeGen, part: str, type_map: str) -> CodeGen {
                 g = g.emit("forge_f64_to_str(" + rewritten + ")")
             }
         } else if content.contains(".") {
-            // Field access — look up the object type to determine field type
+            // Field access — look up the field type via StructType.field in type_map
             let dot_pos = find_char(content, ".")
             let field_obj = content.substring(0, dot_pos)
-            let obj_type = lookup_type(type_map, field_obj)
-            // Default to f64 for struct fields (most common for math)
-            // but if it's a known int type, use i64
-            if obj_type == "int64_t" || obj_type == "int32_t" {
-                g = g.emit("forge_i64_to_str((int64_t)" + content + ")")
-            } else if obj_type == "const char*" {
+            let field_name = content.substring(dot_pos + 1, content.len())
+            let mut obj_type = lookup_type(type_map, field_obj)
+            if obj_type == "Self" {
+                let st = lookup_type(type_map, "__self_type")
+                if st != "" { obj_type = st }
+            }
+            // Look up StructType.fieldName
+            let field_type = if obj_type != "" { lookup_type(type_map, obj_type + "." + field_name) } else { "" }
+            if field_type == "const char*" {
                 g = g.emit(content)
+            } else if field_type == "int64_t" || field_type == "int32_t" {
+                g = g.emit("forge_i64_to_str((int64_t)" + content + ")")
+            } else if field_type == "bool" {
+                g = g.emit("forge_bool_to_str(" + content + ")")
             } else {
+                // Default to double
                 g = g.emit("forge_f64_to_str(" + content + ")")
             }
         } else {
@@ -1024,17 +1199,32 @@ fn infer_c_type_with_map(expr: Expr, type_map: str) -> str {
             if obj.kind == "ident" { obj.value }
             else { infer_c_type(expr) }
         } else if callee.kind == "field" {
-            // Method call — check if object is a struct type
+            // Method call — check object type and method name
             let obj = callee.left[0]
+            let method_name = callee.value
             let obj_type = infer_expr_type(obj, type_map)
-            if obj_type != "" && obj_type != "const char*" && obj_type != "int64_t" && obj_type != "int32_t" && obj_type != "double" && obj_type != "float" && obj_type != "bool" {
-                // Method on a struct — default to double for now (most common for math methods)
-                "double"
+            if obj_type.starts_with("ForgeArray") {
+                // Array methods
+                if method_name == "push" { obj_type }
+                else if method_name == "len" { "int64_t" }
+                else { "int64_t" }
+            } else if obj_type != "" && obj_type != "const char*" && obj_type != "int64_t" && obj_type != "int32_t" && obj_type != "double" && obj_type != "float" && obj_type != "bool" {
+                // Method on a struct — try to guess from method name
+                if method_name == "len" || method_name == "size" || method_name == "count" { "int64_t" }
+                else { "double" }
             } else { infer_c_type(expr) }
         } else { infer_c_type(expr) }
     } else if expr.kind == "ident" {
         let t = lookup_type(type_map, expr.value)
         if t != "" { t } else { infer_c_type(expr) }
+    } else if expr.kind == "array" {
+        if expr.args.len() > 0 {
+            let elem_t = infer_c_type_with_map(expr.args[0], type_map)
+            let elem_t = c_emit_type(elem_t)
+            "ForgeArray<" + elem_t + ">"
+        } else {
+            "ForgeArray<int64_t>"
+        }
     } else {
         infer_c_type(expr)
     }
@@ -1069,6 +1259,15 @@ fn infer_c_type(expr: Expr) -> str {
         if lt == "double" || infer_c_type(expr.right[0]) == "double" { "double" }
         else if lt == "const char*" { "const char*" }
         else { lt }
+    }
+    else if expr.kind == "array" {
+        // Array literal — try to infer element type from first element
+        if expr.args.len() > 0 {
+            let elem_t = infer_c_type(expr.args[0])
+            "ForgeArray"
+        } else {
+            "ForgeArray"
+        }
     }
     else { "int64_t" }
 }
