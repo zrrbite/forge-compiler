@@ -1133,6 +1133,9 @@ impl Parser {
         self.skip_newlines();
         let then_block = self.parse_block()?;
 
+        // Check for else — may be after newlines.
+        let saved_pos = self.pos;
+        self.skip_newlines();
         let else_block = if self.eat(&TokenKind::Else) {
             self.skip_newlines();
             if *self.peek_kind() == TokenKind::If {
@@ -1148,6 +1151,7 @@ impl Parser {
                 }))
             }
         } else {
+            self.pos = saved_pos;
             None
         };
 
