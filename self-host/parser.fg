@@ -234,13 +234,13 @@ fn parse_struct(mut p: Parser) -> Item {
         }
     }
     p.skip_newlines()
-    p.expect("op", "{")
+    p.expect("op", "\{")
 
     let mut fields = []
     p.skip_newlines()
     let mut going = true
     while going {
-        if p.peek().value == "}" {
+        if p.peek().value == "\}" {
             going = false
         } else {
             let fname = p.expect("ident", "").value
@@ -251,7 +251,7 @@ fn parse_struct(mut p: Parser) -> Item {
             p.skip_newlines()
         }
     }
-    p.expect("op", "}")
+    p.expect("op", "\}")
     Item.new_struct(name_tok.value, fields)
 }
 
@@ -291,13 +291,13 @@ fn parse_impl(mut p: Parser) -> Item {
     }
 
     p.skip_newlines()
-    p.expect("op", "{")
+    p.expect("op", "\{")
 
     let mut methods = []
     p.skip_newlines()
     let mut going = true
     while going {
-        if p.peek().value == "}" {
+        if p.peek().value == "\}" {
             going = false
         } else if p.peek().value == "fn" {
             methods.push(parse_fn(p))
@@ -306,7 +306,7 @@ fn parse_impl(mut p: Parser) -> Item {
             p.advance()
         }
     }
-    p.expect("op", "}")
+    p.expect("op", "\}")
     Item.new_impl(target, trait_name, methods)
 }
 
@@ -330,19 +330,19 @@ fn parse_use(mut p: Parser) -> Item {
 // ── Blocks and statements ───────────────────────────────────────────────
 
 fn parse_block(mut p: Parser) -> [Stmt] {
-    p.expect("op", "{")
+    p.expect("op", "\{")
     let mut stmts = []
     p.skip_newlines()
     let mut going = true
     while going {
-        if p.peek().value == "}" || p.at_end() {
+        if p.peek().value == "\}" || p.at_end() {
             going = false
         } else {
             stmts.push(parse_stmt(p))
             p.skip_newlines()
         }
     }
-    p.expect("op", "}")
+    p.expect("op", "\}")
     stmts
 }
 
@@ -352,7 +352,7 @@ fn parse_stmt(mut p: Parser) -> Stmt {
         parse_let(p)
     } else if tok.value == "return" {
         p.advance()
-        if p.peek().kind == "newline" || p.peek().value == "}" {
+        if p.peek().kind == "newline" || p.peek().value == "\}" {
             Stmt.new_return(Expr.new_none())
         } else {
             let expr = parse_expr(p)
@@ -513,7 +513,7 @@ fn parse_prefix(mut p: Parser) -> Expr {
     } else if tok.kind == "ident" {
         let name = p.advance().value
         // Check for struct literal: Name { ... }
-        if p.peek().value == "{" {
+        if p.peek().value == "\{" {
             if name.char_at(0).is_alpha() {
                 // Could be struct literal if uppercase, or block.
                 // Use uppercase heuristic.
@@ -521,7 +521,7 @@ fn parse_prefix(mut p: Parser) -> Expr {
                 if first_char == first_char.to_upper() {
                     p.advance()
                     let field_exprs = parse_struct_fields(p)
-                    p.expect("op", "}")
+                    p.expect("op", "\}")
                     Expr.new_struct_lit(name, field_exprs)
                 } else {
                     Expr.new_ident(name)
@@ -558,7 +558,7 @@ fn parse_prefix(mut p: Parser) -> Expr {
         }
         p.expect("op", "]")
         Expr.new_array(elements)
-    } else if tok.value == "{" {
+    } else if tok.value == "\{" {
         let stmts = parse_block(p)
         Expr.new_block(stmts)
     } else if tok.value == "if" {
@@ -617,7 +617,7 @@ fn parse_struct_fields(mut p: Parser) -> [Expr] {
     p.skip_newlines()
     let mut going = true
     while going {
-        if p.peek().value == "}" {
+        if p.peek().value == "\}" {
             going = false
         } else {
             let fname = p.expect("ident", "").value
@@ -658,15 +658,15 @@ fn parse_match_expr(mut p: Parser) -> Expr {
     p.expect("keyword", "match")
     let scrutinee = parse_expr(p)
     p.skip_newlines()
-    p.expect("op", "{")
+    p.expect("op", "\{")
     // For now, skip the match body — just consume until }.
     let mut depth = 1
     let mut scanning = true
     while scanning {
         let tok = p.advance()
-        if tok.value == "{" {
+        if tok.value == "\{" {
             depth = depth + 1
-        } else if tok.value == "}" {
+        } else if tok.value == "\}" {
             depth = depth - 1
             if depth == 0 {
                 scanning = false
