@@ -202,6 +202,8 @@ pub struct Interpreter {
     methods: HashMap<String, HashMap<String, Function>>,
     trait_impls: HashMap<(String, String), HashMap<String, Function>>,
     output: Option<Vec<String>>,
+    /// Temporary storage for modified `self` from mut self methods.
+    last_modified_self: Option<Value>,
 }
 
 impl Default for Interpreter {
@@ -217,6 +219,7 @@ impl Interpreter {
             methods: HashMap::new(),
             trait_impls: HashMap::new(),
             output: None,
+            last_modified_self: None,
         };
         interp.register_builtins();
         interp
@@ -228,6 +231,7 @@ impl Interpreter {
             methods: HashMap::new(),
             trait_impls: HashMap::new(),
             output: Some(Vec::new()),
+            last_modified_self: None,
         };
         interp.register_builtins();
         interp
@@ -784,7 +788,17 @@ impl Interpreter {
                 }
             }
 
-            return self.eval_method_call(obj, field, args);
+            self.last_modified_self = None;
+            let result = self.eval_method_call(obj, field, args);
+
+            // Write back modified self for mut self methods.
+            if let Some(new_self) = self.last_modified_self.take()
+                && let ExprKind::Identifier(var_name) = &object.kind
+            {
+                let _ = self.env.set(var_name, new_self);
+            }
+
+            return result;
         }
 
         let func = try_val!(self.eval_expr(callee));
@@ -1370,7 +1384,21 @@ impl Interpreter {
             Outcome::Return(v) => Outcome::Val(v),
             other => other,
         };
+        // Capture modified self before popping scope (for mut self methods).
+        let modified_self = if func
+            .params
+            .first()
+            .is_some_and(|p| p.name == "self" && p.mutable)
+        {
+            self.env.get("self").cloned()
+        } else {
+            None
+        };
         self.env.pop_scope();
+        // Store modified self so the caller can write it back.
+        if let Some(new_self) = modified_self {
+            self.last_modified_self = Some(new_self);
+        }
         result
     }
 
@@ -1498,7 +1526,12 @@ impl Interpreter {
                 let _ = self.env.set(name, final_val);
             }
             ExprKind::FieldAccess { object, field } => {
-                if let ExprKind::Identifier(obj_name) = &object.kind
+                let obj_name = match &object.kind {
+                    ExprKind::Identifier(n) => Some(n.as_str()),
+                    ExprKind::SelfValue => Some("self"),
+                    _ => None,
+                };
+                if let Some(obj_name) = obj_name
                     && let Some(Value::Struct { name, mut fields }) =
                         self.env.get(obj_name).cloned()
                 {
