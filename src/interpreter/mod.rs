@@ -695,28 +695,35 @@ impl Interpreter {
                 body,
             } => {
                 let iterable = try_val!(self.eval_expr(iter));
-                if let Value::Array(items) = iterable {
-                    for item in items {
-                        self.env.push_scope();
-                        self.env.define(binding.clone(), item);
-                        match self.eval_block_inner(body) {
-                            Outcome::Val(_) => {}
-                            Outcome::Break => {
-                                self.env.pop_scope();
-                                break;
-                            }
-                            Outcome::Continue => {}
-                            Outcome::Return(v) => {
-                                self.env.pop_scope();
-                                return Outcome::Return(v);
-                            }
-                            Outcome::Error(e) => {
-                                self.env.pop_scope();
-                                return Outcome::Error(e);
-                            }
+                // Convert iterable to a Vec<Value> for uniform handling.
+                let items = match iterable {
+                    Value::Array(items) => items,
+                    Value::Map(entries) => entries
+                        .into_iter()
+                        .map(|(k, v)| Value::Array(vec![k, v]))
+                        .collect(),
+                    _ => vec![],
+                };
+                for item in items {
+                    self.env.push_scope();
+                    self.env.define(binding.clone(), item);
+                    match self.eval_block_inner(body) {
+                        Outcome::Val(_) => {}
+                        Outcome::Break => {
+                            self.env.pop_scope();
+                            break;
                         }
-                        self.env.pop_scope();
+                        Outcome::Continue => {}
+                        Outcome::Return(v) => {
+                            self.env.pop_scope();
+                            return Outcome::Return(v);
+                        }
+                        Outcome::Error(e) => {
+                            self.env.pop_scope();
+                            return Outcome::Error(e);
+                        }
                     }
+                    self.env.pop_scope();
                 }
                 Outcome::Val(Value::Unit)
             }
@@ -1579,6 +1586,25 @@ impl Interpreter {
             (Value::Map(entries), "values") => {
                 let vals: Vec<Value> = entries.iter().map(|(_, v)| v.clone()).collect();
                 return Outcome::Val(Value::Array(vals));
+            }
+            (Value::Map(entries), "entries") => {
+                let pairs: Vec<Value> = entries
+                    .iter()
+                    .map(|(k, v)| Value::Array(vec![k.clone(), v.clone()]))
+                    .collect();
+                return Outcome::Val(Value::Array(pairs));
+            }
+            (Value::Map(entries), "get_or") => {
+                if args.len() != 2 {
+                    return Outcome::Error("get_or requires 2 arguments (key, default)".into());
+                }
+                let key = try_val!(self.eval_expr(&args[0]));
+                let default = try_val!(self.eval_expr(&args[1]));
+                let key_str = key.to_string();
+                return match entries.iter().find(|(k, _)| k.to_string() == key_str) {
+                    Some((_, v)) => Outcome::Val(v.clone()),
+                    None => Outcome::Val(default),
+                };
             }
             _ => {}
         }
