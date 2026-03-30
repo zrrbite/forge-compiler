@@ -322,8 +322,8 @@ impl Interpreter {
                 fields: vec![],
             },
         );
-        // Process builtins.
-        for name in ["args", "exit", "exec"] {
+        // Process/IO builtins.
+        for name in ["args", "exit", "exec", "input"] {
             self.env
                 .define(name.into(), Value::Function(FnValue::Builtin(name.into())));
         }
@@ -1647,6 +1647,29 @@ impl Interpreter {
                         Outcome::Val(make_result(success, stdout, stderr, code))
                     }
                     Err(e) => Outcome::Val(make_result(false, String::new(), e.to_string(), -1)),
+                }
+            }
+            "input" => {
+                // input() or input("prompt") — read a line from stdin
+                if let Some(Value::String(prompt)) = args.first() {
+                    eprint!("{prompt}");
+                    use std::io::Write;
+                    std::io::stderr().flush().ok();
+                }
+                let mut line = String::new();
+                match std::io::stdin().read_line(&mut line) {
+                    Ok(0) => Outcome::Val(Value::String(String::new())), // EOF
+                    Ok(_) => {
+                        // Strip trailing newline
+                        if line.ends_with('\n') {
+                            line.pop();
+                            if line.ends_with('\r') {
+                                line.pop();
+                            }
+                        }
+                        Outcome::Val(Value::String(line))
+                    }
+                    Err(e) => Outcome::Error(format!("input error: {e}")),
                 }
             }
             _ => Outcome::Val(Value::Unit),
