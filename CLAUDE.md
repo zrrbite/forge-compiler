@@ -44,8 +44,7 @@ Or run the binary directly after building:
 ./target/debug/forge tests/samples/hello.fg
 ```
 
-Currently outputs the token stream. Later stages (parser, type checking, codegen)
-will be added incrementally.
+Full compiler pipeline: lexer, parser, HIR, type checker, borrow checker, LLVM codegen, interpreter. Also includes a self-hosted compiler written in Forge itself.
 
 File extension: `.fg`
 
@@ -54,7 +53,7 @@ File extension: `.fg`
 ```bash
 cargo test                  # run all tests
 cargo test lexer            # run lexer tests only
-cargo test parser           # run parser tests only (future)
+cargo test parser           # run parser tests only
 ```
 
 ## Code Quality
@@ -83,13 +82,13 @@ src/
     mod.rs                  # Lexer implementation
     token.rs                # Token types and Span
     tests.rs                # Lexer tests
-  parser/                   # (future) Parser -> AST
-  ast/                      # (future) AST node definitions
-  hir/                      # (future) High-level IR (desugared AST)
-  typeck/                   # (future) Type checking + borrow checking
-  mir/                      # (future) Mid-level IR
-  codegen/                  # (future) LLVM IR generation
-  errors/                   # (future) Diagnostics and error reporting
+  parser/                   # Parser -> AST
+  ast/                      # AST node definitions
+  hir/                      # High-level IR (desugared AST)
+  typeck/                   # Type checking + borrow checking
+  mir/                      # Mid-level IR
+  codegen/                  # LLVM IR generation
+  errors/                   # Diagnostics and error reporting
 ```
 
 ## Compiler Pipeline
@@ -125,7 +124,7 @@ Source (.fg)
 
 ```
 fn let mut struct impl trait enum match if else while for in
-return break continue use comptime spawn where pub mod
+return break continue use comptime spawn where pub mod defer
 true false self Self
 ```
 
@@ -195,7 +194,7 @@ The lexer breaks interpolated strings into fragments:
 
 ### Reference Programs
 
-10 sample programs define the language spec (see `tests/samples/`):
+11 sample programs define the language spec (see `tests/samples/`):
 
 1. **hello.fg** — Basics: functions, let bindings, interpolation, mutability
 2. **vec2.fg** — Structs, methods, operator overloading
@@ -207,3 +206,4 @@ The lexer breaks interpolated strings into fragments:
 8. **comptime.fg** — Compile-time execution, validation, tables
 9. **iterators.fg** — Iterator trait, combinators, zero-cost chains
 10. **http_server.fg** — Full app: JSON, database, routing
+11. **mini_lexer.fg** — Self-hosting: a minimal lexer written in Forge

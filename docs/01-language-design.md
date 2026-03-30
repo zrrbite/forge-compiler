@@ -107,8 +107,9 @@ usize  isize                // pointer-sized integers
 
 ## Reference Programs
 
-The language is defined by 10 sample programs that serve as both specification
-and test suite. The compiler is "done" when all 10 run correctly:
+The language is defined by 11 sample programs that serve as both specification
+and test suite. All 11 run correctly in the interpreter, the LLVM compiler,
+and the self-hosted Forge-to-C compiler:
 
 1. **hello.fg** — basics, string interpolation, mutability
 2. **vec2.fg** — structs, methods, operator overloading
@@ -120,3 +121,4 @@ and test suite. The compiler is "done" when all 10 run correctly:
 8. **comptime.fg** — compile-time execution and validation
 9. **iterators.fg** — Iterator trait, zero-cost combinator chains
 10. **http_server.fg** — full app with JSON, database, routing
+11. **mini_lexer.fg** — a Forge tokenizer written in Forge

@@ -84,7 +84,7 @@ tests/
   mut_ref.rs           Special case: &mut references
   nested_mut_self.rs   Special case: nested mut self calls
 
-tests/samples/         10 reference programs defining the language spec
+tests/samples/         11 reference programs defining the language spec
   hello.fg             Basics: functions, let bindings, interpolation
   vec2.fg              Structs, methods, operator overloading
   buffer.fg            Ownership, borrowing, arrays
@@ -95,6 +95,7 @@ tests/samples/         10 reference programs defining the language spec
   concurrency.fg       Spawn/atomic patterns (placeholder)
   comptime.fg          Compile-time execution (placeholder)
   http_server.fg       Full app pattern (placeholder)
+  mini_lexer.fg        Self-hosting: minimal lexer in Forge
 
 self-host/             Self-hosted compiler written in Forge
   lexer.fg             Tokenizer
@@ -265,8 +266,8 @@ input.fg → lexer.fg → parser.fg → codegen.fg → output.c → cc → binar
 
 ### Current Status
 
-9 of 11 reference programs compile and run correctly via the self-hosted
-compiler. The remaining 2 need closures and match expressions.
+All 11 reference programs compile and run correctly via the self-hosted
+compiler.
 
 ### Known Limitations
 
