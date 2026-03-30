@@ -65,7 +65,7 @@ impl<'ctx> Codegen<'ctx> {
             .fn_type(&[context.ptr_type(AddressSpace::default()).into()], true);
         let printf_fn = module.add_function("printf", printf_type, None);
 
-        Self {
+        let mut codegen = Self {
             context,
             module,
             builder,
@@ -76,7 +76,104 @@ impl<'ctx> Codegen<'ctx> {
             current_impl_target: None,
             var_struct_names: vec![HashMap::new()],
             printf_fn,
-        }
+        };
+        codegen.emit_string_runtime();
+        codegen
+    }
+
+    /// Emit the forge_str_concat runtime function as LLVM IR.
+    fn emit_string_runtime(&mut self) {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let i64_type = self.context.i64_type();
+
+        // Declare strlen, malloc, memcpy
+        let strlen_ty = i64_type.fn_type(&[ptr_type.into()], false);
+        let strlen_fn = self
+            .module
+            .get_function("strlen")
+            .unwrap_or_else(|| self.module.add_function("strlen", strlen_ty, None));
+
+        let malloc_ty = ptr_type.fn_type(&[i64_type.into()], false);
+        let malloc_fn = self
+            .module
+            .get_function("malloc")
+            .unwrap_or_else(|| self.module.add_function("malloc", malloc_ty, None));
+
+        let memcpy_ty =
+            ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), i64_type.into()], false);
+        let memcpy_fn = self
+            .module
+            .get_function("memcpy")
+            .unwrap_or_else(|| self.module.add_function("memcpy", memcpy_ty, None));
+
+        // Build forge_str_concat(a: ptr, b: ptr) -> ptr
+        let concat_ty = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+        let concat_fn = self
+            .module
+            .add_function("forge_str_concat", concat_ty, None);
+        let entry = self.context.append_basic_block(concat_fn, "entry");
+        self.builder.position_at_end(entry);
+
+        let a = concat_fn.get_nth_param(0).unwrap().into_pointer_value();
+        let b = concat_fn.get_nth_param(1).unwrap().into_pointer_value();
+
+        // la = strlen(a), lb = strlen(b)
+        let la = match self
+            .builder
+            .build_call(strlen_fn, &[a.into()], "la")
+            .unwrap()
+            .try_as_basic_value()
+        {
+            inkwell::values::ValueKind::Basic(v) => v.into_int_value(),
+            _ => i64_type.const_int(0, false),
+        };
+        let lb = match self
+            .builder
+            .build_call(strlen_fn, &[b.into()], "lb")
+            .unwrap()
+            .try_as_basic_value()
+        {
+            inkwell::values::ValueKind::Basic(v) => v.into_int_value(),
+            _ => i64_type.const_int(0, false),
+        };
+
+        // total = la + lb + 1
+        let sum = self.builder.build_int_add(la, lb, "sum").unwrap();
+        let one = i64_type.const_int(1, false);
+        let total = self.builder.build_int_add(sum, one, "total").unwrap();
+
+        // r = malloc(total)
+        let r = match self
+            .builder
+            .build_call(malloc_fn, &[total.into()], "r")
+            .unwrap()
+            .try_as_basic_value()
+        {
+            inkwell::values::ValueKind::Basic(v) => v.into_pointer_value(),
+            _ => ptr_type.const_null(),
+        };
+
+        // memcpy(r, a, la)
+        self.builder
+            .build_call(memcpy_fn, &[r.into(), a.into(), la.into()], "")
+            .unwrap();
+
+        // memcpy(r + la, b, lb + 1)  (include null terminator)
+        let r_plus_la = unsafe {
+            self.builder
+                .build_gep(self.context.i8_type(), r, &[la], "r_off")
+                .unwrap()
+        };
+        let lb_plus_1 = self.builder.build_int_add(lb, one, "lb1").unwrap();
+        self.builder
+            .build_call(
+                memcpy_fn,
+                &[r_plus_la.into(), b.into(), lb_plus_1.into()],
+                "",
+            )
+            .unwrap();
+
+        self.builder.build_return(Some(&r)).unwrap();
     }
 
     pub fn compile_program(&mut self, program: &HirProgram) -> Result<(), CodegenError> {
@@ -1231,7 +1328,100 @@ impl<'ctx> Codegen<'ctx> {
             };
         }
 
+        // String operations: both operands are pointers (char*)
+        if lhs.is_pointer_value() && rhs.is_pointer_value() {
+            let l = lhs.into_pointer_value();
+            let r = rhs.into_pointer_value();
+            return match op {
+                BinOp::Add => {
+                    // String concatenation: call forge_str_concat(a, b)
+                    let concat_fn = self.get_or_declare_str_concat();
+                    let result = self
+                        .builder
+                        .build_call(concat_fn, &[l.into(), r.into()], "concat")
+                        .unwrap();
+                    match result.try_as_basic_value() {
+                        inkwell::values::ValueKind::Basic(val) => Ok(val),
+                        _ => Ok(self
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .const_null()
+                            .into()),
+                    }
+                }
+                BinOp::Eq => {
+                    // String equality: strcmp(a, b) == 0
+                    let strcmp_fn = self.get_or_declare_strcmp();
+                    let cmp = self
+                        .builder
+                        .build_call(strcmp_fn, &[l.into(), r.into()], "strcmp")
+                        .unwrap()
+                        .try_as_basic_value();
+                    let cmp_val = match cmp {
+                        inkwell::values::ValueKind::Basic(val) => val.into_int_value(),
+                        _ => self.context.i32_type().const_int(1, false),
+                    };
+                    let zero = self.context.i32_type().const_int(0, false);
+                    Ok(self
+                        .builder
+                        .build_int_compare(IntPredicate::EQ, cmp_val, zero, "streq")
+                        .unwrap()
+                        .into())
+                }
+                BinOp::NotEq => {
+                    let strcmp_fn = self.get_or_declare_strcmp();
+                    let cmp = self
+                        .builder
+                        .build_call(strcmp_fn, &[l.into(), r.into()], "strcmp")
+                        .unwrap()
+                        .try_as_basic_value();
+                    let cmp_val = match cmp {
+                        inkwell::values::ValueKind::Basic(val) => val.into_int_value(),
+                        _ => self.context.i32_type().const_int(1, false),
+                    };
+                    let zero = self.context.i32_type().const_int(0, false);
+                    Ok(self
+                        .builder
+                        .build_int_compare(IntPredicate::NE, cmp_val, zero, "strne")
+                        .unwrap()
+                        .into())
+                }
+                _ => Err(CodegenError(format!(
+                    "Unsupported string operation: {:?}",
+                    op
+                ))),
+            };
+        }
+
         Err(CodegenError("Mismatched types in binary operation".into()))
+    }
+
+    fn get_or_declare_strcmp(&self) -> FunctionValue<'ctx> {
+        let name = "strcmp";
+        self.module.get_function(name).unwrap_or_else(|| {
+            let fn_type = self.context.i32_type().fn_type(
+                &[
+                    self.context.ptr_type(AddressSpace::default()).into(),
+                    self.context.ptr_type(AddressSpace::default()).into(),
+                ],
+                false,
+            );
+            self.module.add_function(name, fn_type, None)
+        })
+    }
+
+    fn get_or_declare_str_concat(&self) -> FunctionValue<'ctx> {
+        let name = "forge_str_concat";
+        self.module.get_function(name).unwrap_or_else(|| {
+            let fn_type = self.context.ptr_type(AddressSpace::default()).fn_type(
+                &[
+                    self.context.ptr_type(AddressSpace::default()).into(),
+                    self.context.ptr_type(AddressSpace::default()).into(),
+                ],
+                false,
+            );
+            self.module.add_function(name, fn_type, None)
+        })
     }
 
     // ── Control flow ────────────────────────────────────────────────────
