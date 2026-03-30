@@ -327,6 +327,28 @@ All 11 reference programs in `tests/samples/` compile and run correctly through
 the self-hosted pipeline. See [Self-Hosting](docs/11-self-hosting.md) for
 architecture and status details.
 
+## Language Inspirations
+
+Forge picks the best ideas from languages we love:
+
+| Feature | Inspired by | Forge version |
+|---------|-------------|---------------|
+| Ownership & borrowing | **Rust** | Affine types, `&mut`, move semantics — without lifetime annotations |
+| String interpolation | **Swift, Kotlin** | `"Hello, {name}!"` — built into the language, not a macro |
+| No semicolons | **Go, Python** | Newlines terminate statements |
+| `comptime` blocks | **Zig** | Same language at compile-time and runtime — no macros |
+| Closures & iterators | **Ruby** | `items.map(\|x\| x * 2).filter(\|x\| x > 3)` |
+| Traits | **Rust** | The only abstraction mechanism — no inheritance |
+| Safe navigation `?.` | **Ruby, Kotlin** | `map.get("key")?.to_upper()` — None-safe chaining |
+| Null coalescing `??` | **Swift, C#** | `config.get("port") ?? 8080` |
+| Implicit returns | **Ruby, Rust** | Last expression is the return value |
+| Operator overloading | **C++, Rust** | `impl Add for Vec2` — clean and explicit |
+| Error handling | **Rust, Go** | `Result<T>` with `?` propagation — no exceptions |
+| Fast compilation | **Go, Zig** | LLVM backend with `-O3`, tiny binaries |
+
+See [detailed comparisons](docs/10-comparisons.md) for benchmarks and syntax
+side-by-side across Forge, Rust, C++, Zig, and Go.
+
 ## Performance
 
 Forge has two execution modes:
