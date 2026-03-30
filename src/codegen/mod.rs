@@ -50,6 +50,8 @@ pub struct Codegen<'ctx> {
     method_functions: HashMap<String, FunctionValue<'ctx>>,
     /// Current impl target (set during method compilation).
     current_impl_target: Option<String>,
+    /// Variable name → Forge struct type name (for method dispatch).
+    var_struct_names: Vec<HashMap<String, String>>,
     printf_fn: FunctionValue<'ctx>,
 }
 
@@ -72,6 +74,7 @@ impl<'ctx> Codegen<'ctx> {
             struct_types: HashMap::new(),
             method_functions: HashMap::new(),
             current_impl_target: None,
+            var_struct_names: vec![HashMap::new()],
             printf_fn,
         }
     }
@@ -165,10 +168,12 @@ impl<'ctx> Codegen<'ctx> {
 
     fn push_scope(&mut self) {
         self.variables.push(HashMap::new());
+        self.var_struct_names.push(HashMap::new());
     }
 
     fn pop_scope(&mut self) {
         self.variables.pop();
+        self.var_struct_names.pop();
     }
 
     fn define_var(&mut self, name: String, ptr: PointerValue<'ctx>, ty: BasicTypeEnum<'ctx>) {
@@ -379,6 +384,13 @@ impl<'ctx> Codegen<'ctx> {
                         let alloca = self.create_alloca(name, val.get_type(), function);
                         self.builder.build_store(alloca, val).unwrap();
                         self.define_var(name.clone(), alloca, val.get_type());
+                        // Track struct type name for method dispatch.
+                        if let Some(sname) = self.infer_struct_name_from_expr(init_expr) {
+                            self.var_struct_names
+                                .last_mut()
+                                .unwrap()
+                                .insert(name.clone(), sname);
+                        }
                     }
                     last_val = None;
                 }
@@ -675,6 +687,25 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     /// Try to determine the struct type name from an expression.
+    /// Infer the Forge struct name from an expression (for let bindings).
+    fn infer_struct_name_from_expr(&self, expr: &HirExpr) -> Option<String> {
+        match &expr.kind {
+            HirExprKind::StructLiteral { name, .. } => Some(name.clone()),
+            HirExprKind::Call { callee, .. } => {
+                // Type.new() → Type
+                if let HirExprKind::FieldAccess { object, .. } = &callee.kind
+                    && let HirExprKind::Identifier(name) = &object.kind
+                    && self.struct_types.contains_key(name.as_str())
+                {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn infer_struct_name(&self, expr: &HirExpr) -> Option<String> {
         match &expr.kind {
             HirExprKind::SelfValue => {
@@ -682,7 +713,13 @@ impl<'ctx> Codegen<'ctx> {
                 self.current_impl_target.clone()
             }
             HirExprKind::Identifier(name) => {
-                // Check if the variable's type is a known struct.
+                // First check the explicit struct name tracking.
+                for scope in self.var_struct_names.iter().rev() {
+                    if let Some(sname) = scope.get(name.as_str()) {
+                        return Some(sname.clone());
+                    }
+                }
+                // Fall back to LLVM type comparison.
                 if let Some((_, ty)) = self.lookup_var(name)
                     && ty.is_struct_type()
                 {
