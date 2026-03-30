@@ -10,21 +10,30 @@ Syntax highlighting for the [Forge](https://github.com/zrrbite/forge-compiler) p
 - Auto-closing brackets, quotes, and closure pipes
 - Indentation support
 
-## Install from source
+## Install
 
-1. Copy or symlink this directory into your VS Code extensions folder:
+### VS Code (standard)
+
+Symlink the extension into your extensions folder:
 
 ```bash
-# Linux
-ln -s /path/to/forge-compiler/editors/vscode ~/.vscode/extensions/forge-lang
-
-# macOS
 ln -s /path/to/forge-compiler/editors/vscode ~/.vscode/extensions/forge-lang
 ```
 
-2. Reload VS Code (Ctrl+Shift+P > "Reload Window")
+Reload VS Code (Ctrl+Shift+P > "Reload Window").
 
-3. Open any `.fg` file — it should have syntax highlighting.
+### VS Code OSS / Code - OSS
+
+The OSS build doesn't auto-discover symlinked extensions. Package and install
+as a `.vsix` instead:
+
+```bash
+cd editors/vscode
+npx @vscode/vsce package --allow-missing-repository
+code --install-extension forge-lang-0.1.0.vsix
+```
+
+Reload VS Code (Ctrl+Shift+P > "Reload Window").
 
 ## Supported syntax
 
