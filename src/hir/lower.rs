@@ -186,6 +186,7 @@ impl Lowering {
             }
             ast::StmtKind::Break => HirStmtKind::Break,
             ast::StmtKind::Continue => HirStmtKind::Continue,
+            ast::StmtKind::Defer(expr) => HirStmtKind::Defer(self.lower_expr(expr)),
         };
         HirStmt {
             id,

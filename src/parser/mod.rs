@@ -663,6 +663,16 @@ impl Parser {
                     span,
                 })
             }
+            TokenKind::Defer => {
+                let start = self.advance().span;
+                let expr = self.parse_expr()?;
+                let span = Span::new(start.start, expr.span.end);
+                self.eat_newline_or_eof();
+                Some(Stmt {
+                    kind: StmtKind::Defer(expr),
+                    span,
+                })
+            }
             _ => {
                 let expr = self.parse_expr()?;
 

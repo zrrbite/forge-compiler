@@ -412,6 +412,7 @@ impl<'ctx> Codegen<'ctx> {
                 HirStmtKind::Break | HirStmtKind::Continue => {
                     last_val = None;
                 }
+                HirStmtKind::Defer(_) => { /* TODO: defer codegen */ }
             }
         }
 

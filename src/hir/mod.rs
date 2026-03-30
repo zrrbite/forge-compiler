@@ -159,6 +159,7 @@ pub enum HirStmtKind {
     Return(Option<HirExpr>),
     Break,
     Continue,
+    Defer(HirExpr),
 }
 
 /// An expression.

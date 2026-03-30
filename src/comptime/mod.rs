@@ -299,6 +299,7 @@ fn hir_stmt_to_ast(stmt: &HirStmt) -> ast::Stmt {
         HirStmtKind::Return(expr) => ast::StmtKind::Return(expr.as_ref().map(hir_expr_to_ast)),
         HirStmtKind::Break => ast::StmtKind::Break,
         HirStmtKind::Continue => ast::StmtKind::Continue,
+        HirStmtKind::Defer(expr) => ast::StmtKind::Expr(hir_expr_to_ast(expr)),
     };
     ast::Stmt {
         kind,
