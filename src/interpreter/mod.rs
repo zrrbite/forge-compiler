@@ -323,7 +323,7 @@ impl Interpreter {
             },
         );
         // Process builtins.
-        for name in ["args", "exit"] {
+        for name in ["args", "exit", "exec"] {
             self.env
                 .define(name.into(), Value::Function(FnValue::Builtin(name.into())));
         }
@@ -359,6 +359,34 @@ impl Interpreter {
             Some(_) => Err(RuntimeError("'main' is not a function".into())),
             None => Err(RuntimeError("No main() function found".into())),
         }
+    }
+
+    /// Evaluate a program fragment in the REPL. Registers items and executes
+    /// statements in the current scope. Returns the last expression value
+    /// (if any) for auto-printing.
+    pub fn eval_repl(&mut self, program: &Program) -> Result<Option<Value>, RuntimeError> {
+        let mut last_value = None;
+
+        for item in &program.items {
+            match &item.kind {
+                ItemKind::Function(func) => {
+                    if func.name == "main" {
+                        // Wrapped input — run body in current scope (no push/pop)
+                        match self.eval_block_inner(&func.body) {
+                            Outcome::Val(v) => last_value = Some(v),
+                            Outcome::Return(v) => last_value = Some(v),
+                            Outcome::Error(msg) => return Err(RuntimeError(msg)),
+                            _ => {}
+                        }
+                    } else {
+                        self.register_item(item);
+                    }
+                }
+                _ => self.register_item(item),
+            }
+        }
+
+        Ok(last_value)
     }
 
     fn register_item(&mut self, item: &Item) {
@@ -1060,7 +1088,7 @@ impl Interpreter {
             }
             // ── String methods ───────────────────────────────────────
             (Value::String(s), "len") => {
-                return Outcome::Val(Value::Int(s.len() as i128));
+                return Outcome::Val(Value::Int(s.chars().count() as i128));
             }
             (Value::String(s), "trim") => {
                 return Outcome::Val(Value::String(s.trim().to_string()));
@@ -1109,8 +1137,10 @@ impl Interpreter {
                 if let (Value::Int(s_idx), Value::Int(e_idx)) = (start, end) {
                     let s_idx = s_idx as usize;
                     let e_idx = e_idx as usize;
-                    if s_idx <= e_idx && e_idx <= s.len() {
-                        return Outcome::Val(Value::String(s[s_idx..e_idx].to_string()));
+                    let char_count = s.chars().count();
+                    if s_idx <= e_idx && e_idx <= char_count {
+                        let result: String = s.chars().skip(s_idx).take(e_idx - s_idx).collect();
+                        return Outcome::Val(Value::String(result));
                     }
                 }
                 return Outcome::Error("substring: invalid range".into());
@@ -1574,6 +1604,50 @@ impl Interpreter {
                     _ => 0,
                 };
                 std::process::exit(code);
+            }
+            "exec" => {
+                // exec(cmd, [args]) -> { success: bool, stdout: str, stderr: str, code: i64 }
+                if args.is_empty() {
+                    return Outcome::Error("exec requires at least 1 argument (command)".into());
+                }
+                let cmd = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    _ => return Outcome::Error("exec: command must be a string".into()),
+                };
+
+                let mut cmd_args: Vec<String> = vec![];
+                if let Some(Value::Array(items)) = args.get(1) {
+                    for item in items {
+                        if let Value::String(s) = item {
+                            cmd_args.push(s.clone());
+                        }
+                    }
+                }
+
+                let output = std::process::Command::new(&cmd).args(&cmd_args).output();
+
+                let make_result = |success: bool, stdout: String, stderr: String, code: i128| {
+                    let mut fields = HashMap::new();
+                    fields.insert("success".into(), Value::Bool(success));
+                    fields.insert("stdout".into(), Value::String(stdout));
+                    fields.insert("stderr".into(), Value::String(stderr));
+                    fields.insert("code".into(), Value::Int(code));
+                    Value::Struct {
+                        name: "ExecResult".into(),
+                        fields,
+                    }
+                };
+
+                match output {
+                    Ok(out) => {
+                        let success = out.status.success();
+                        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                        let code = out.status.code().unwrap_or(-1) as i128;
+                        Outcome::Val(make_result(success, stdout, stderr, code))
+                    }
+                    Err(e) => Outcome::Val(make_result(false, String::new(), e.to_string(), -1)),
+                }
             }
             _ => Outcome::Val(Value::Unit),
         }

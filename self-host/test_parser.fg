@@ -1,0 +1,21 @@
+// Test the self-hosted parser by parsing a real .fg file.
+use lexer
+use ast
+use parser
+
+fn main() {
+    let source = File.read("tests/samples/hello.fg").unwrap()
+    let raw_tokens = tokenize(source)
+    let tokens = collapse_newlines(raw_tokens)
+
+    print("Lexed {tokens.len()} tokens")
+    print("")
+
+    let mut p = Parser.new(tokens)
+    let items = parse_program(p)
+
+    print("Parsed {items.len()} items:")
+    for item in items {
+        print("  {item.describe()}")
+    }
+}

@@ -1,0 +1,260 @@
+// ast.fg — AST node definitions for the self-hosted Forge compiler.
+
+// We represent the AST using structs with a "kind" field for discrimination,
+// since we don't have full enum codegen yet. Expressions and statements
+// use a tag + fields approach.
+
+struct Param {
+    name: str,
+    ty: str,
+    mutable: bool,
+}
+
+impl Param {
+    fn new(name: str, ty: str, mutable: bool) -> Param {
+        Param { name, ty, mutable }
+    }
+}
+
+struct Field {
+    name: str,
+    ty: str,
+}
+
+impl Field {
+    fn new(name: str, ty: str) -> Field {
+        Field { name, ty }
+    }
+}
+
+// Items are top-level declarations.
+// kind: "fn", "struct", "enum", "impl", "trait", "use"
+struct Item {
+    kind: str,
+    name: str,
+    params: [Param],
+    return_type: str,
+    fields: [Field],
+    body: [Stmt],
+    methods: [Item],
+    trait_name: str,
+    use_path: [str],
+}
+
+impl Item {
+    fn new_fn(name: str, params: [Param], return_type: str, body: [Stmt]) -> Item {
+        Item {
+            kind: "fn",
+            name,
+            params,
+            return_type,
+            fields: [],
+            body,
+            methods: [],
+            trait_name: "",
+            use_path: [],
+        }
+    }
+
+    fn new_struct(name: str, fields: [Field]) -> Item {
+        Item {
+            kind: "struct",
+            name,
+            params: [],
+            return_type: "",
+            fields,
+            body: [],
+            methods: [],
+            trait_name: "",
+            use_path: [],
+        }
+    }
+
+    fn new_impl(target: str, trait_name: str, methods: [Item]) -> Item {
+        Item {
+            kind: "impl",
+            name: target,
+            params: [],
+            return_type: "",
+            fields: [],
+            body: [],
+            methods,
+            trait_name,
+            use_path: [],
+        }
+    }
+
+    fn new_use(path: [str]) -> Item {
+        Item {
+            kind: "use",
+            name: "",
+            params: [],
+            return_type: "",
+            fields: [],
+            body: [],
+            methods: [],
+            trait_name: "",
+            use_path: path,
+        }
+    }
+
+    fn describe(self) -> str {
+        if self.kind == "fn" {
+            let pc = to_str(self.params.len())
+            "fn " + self.name + "(" + pc + " params) -> " + self.return_type
+        } else if self.kind == "struct" {
+            let fc = to_str(self.fields.len())
+            "struct " + self.name + "(" + fc + " fields)"
+        } else if self.kind == "impl" {
+            let mc = to_str(self.methods.len())
+            if self.trait_name.len() > 0 {
+                "impl " + self.trait_name + " for " + self.name + "(" + mc + " methods)"
+            } else {
+                "impl " + self.name + "(" + mc + " methods)"
+            }
+        } else if self.kind == "use" {
+            let path = self.use_path.join(".")
+            "use " + path
+        } else {
+            self.kind + " " + self.name
+        }
+    }
+}
+
+// Statements.
+// kind: "let", "expr", "return", "break", "continue"
+struct Stmt {
+    kind: str,
+    name: str,
+    mutable: bool,
+    ty: str,
+    expr: Expr,
+}
+
+impl Stmt {
+    fn new_let(name: str, mutable: bool, ty: str, expr: Expr) -> Stmt {
+        Stmt { kind: "let", name, mutable, ty, expr }
+    }
+
+    fn new_expr(expr: Expr) -> Stmt {
+        Stmt { kind: "expr", name: "", mutable: false, ty: "", expr }
+    }
+
+    fn new_return(expr: Expr) -> Stmt {
+        Stmt { kind: "return", name: "", mutable: false, ty: "", expr }
+    }
+
+    fn new_break() -> Stmt {
+        Stmt { kind: "break", name: "", mutable: false, ty: "", expr: Expr.new_none() }
+    }
+
+    fn new_continue() -> Stmt {
+        Stmt { kind: "continue", name: "", mutable: false, ty: "", expr: Expr.new_none() }
+    }
+}
+
+// Expressions.
+// kind: "int", "float", "bool", "string", "ident", "binop", "unaryop",
+//       "call", "field", "index", "if", "match", "for", "while",
+//       "block", "assign", "array", "struct_lit", "none"
+struct Expr {
+    kind: str,
+    value: str,
+    left: [Expr],
+    right: [Expr],
+    args: [Expr],
+    body: [Stmt],
+    else_body: [Stmt],
+}
+
+impl Expr {
+    fn new_none() -> Expr {
+        Expr { kind: "none", value: "", left: [], right: [], args: [], body: [], else_body: [] }
+    }
+
+    fn new_int(value: str) -> Expr {
+        Expr { kind: "int", value, left: [], right: [], args: [], body: [], else_body: [] }
+    }
+
+    fn new_float(value: str) -> Expr {
+        Expr { kind: "float", value, left: [], right: [], args: [], body: [], else_body: [] }
+    }
+
+    fn new_bool(value: str) -> Expr {
+        Expr { kind: "bool", value, left: [], right: [], args: [], body: [], else_body: [] }
+    }
+
+    fn new_string(value: str) -> Expr {
+        Expr { kind: "string", value, left: [], right: [], args: [], body: [], else_body: [] }
+    }
+
+    fn new_ident(name: str) -> Expr {
+        Expr { kind: "ident", value: name, left: [], right: [], args: [], body: [], else_body: [] }
+    }
+
+    fn new_binop(op: str, left: Expr, right: Expr) -> Expr {
+        Expr { kind: "binop", value: op, left: [left], right: [right], args: [], body: [], else_body: [] }
+    }
+
+    fn new_unary(op: str, operand: Expr) -> Expr {
+        Expr { kind: "unaryop", value: op, left: [operand], right: [], args: [], body: [], else_body: [] }
+    }
+
+    fn new_call(callee: Expr, arguments: [Expr]) -> Expr {
+        Expr { kind: "call", value: "", left: [callee], right: [], args: arguments, body: [], else_body: [] }
+    }
+
+    fn new_field(object: Expr, field_name: str) -> Expr {
+        Expr { kind: "field", value: field_name, left: [object], right: [], args: [], body: [], else_body: [] }
+    }
+
+    fn new_index(object: Expr, idx: Expr) -> Expr {
+        Expr { kind: "index", value: "", left: [object], right: [idx], args: [], body: [], else_body: [] }
+    }
+
+    fn new_assign(target: Expr, value: Expr) -> Expr {
+        Expr { kind: "assign", value: "", left: [target], right: [value], args: [], body: [], else_body: [] }
+    }
+
+    fn new_array(elements: [Expr]) -> Expr {
+        Expr { kind: "array", value: "", left: [], right: [], args: elements, body: [], else_body: [] }
+    }
+
+    fn new_if(cond: Expr, then_body: [Stmt], else_body: [Stmt]) -> Expr {
+        Expr { kind: "if", value: "", left: [cond], right: [], args: [], body: then_body, else_body }
+    }
+
+    fn new_while(cond: Expr, loop_body: [Stmt]) -> Expr {
+        Expr { kind: "while", value: "", left: [cond], right: [], args: [], body: loop_body, else_body: [] }
+    }
+
+    fn new_for(binding: str, iter: Expr, loop_body: [Stmt]) -> Expr {
+        Expr { kind: "for", value: binding, left: [iter], right: [], args: [], body: loop_body, else_body: [] }
+    }
+
+    fn new_block(stmts: [Stmt]) -> Expr {
+        Expr { kind: "block", value: "", left: [], right: [], args: [], body: stmts, else_body: [] }
+    }
+
+    fn new_struct_lit(name: str, field_exprs: [Expr]) -> Expr {
+        Expr { kind: "struct_lit", value: name, left: [], right: [], args: field_exprs, body: [], else_body: [] }
+    }
+
+    fn describe(self) -> str {
+        if self.kind == "int" || self.kind == "float" || self.kind == "bool" || self.kind == "string" {
+            "{self.kind}({self.value})"
+        } else if self.kind == "ident" {
+            self.value
+        } else if self.kind == "binop" {
+            "({self.left[0].describe()} {self.value} {self.right[0].describe()})"
+        } else if self.kind == "call" {
+            "{self.left[0].describe()}({self.args.len()} args)"
+        } else if self.kind == "field" {
+            "{self.left[0].describe()}.{self.value}"
+        } else if self.kind == "none" {
+            "none"
+        } else {
+            "{self.kind}"
+        }
+    }
+}

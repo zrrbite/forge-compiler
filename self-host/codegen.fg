@@ -1,0 +1,1834 @@
+// codegen.fg — Transpile Forge AST to C source code.
+// Emits C99 that can be compiled with `cc -o output output.c`.
+
+use ast
+
+// CodeGen holds state for the C code emitter.
+struct CodeGen {
+    output: str,
+    indent: i64,
+}
+
+impl CodeGen {
+    fn new() -> CodeGen {
+        CodeGen { output: "", indent: 0 }
+    }
+
+    fn emit(mut self, s: str) -> CodeGen {
+        self.output = self.output + s
+        self
+    }
+
+    fn emit_indent(mut self) -> CodeGen {
+        let mut i = 0
+        while i < self.indent {
+            self.output = self.output + "    "
+            i = i + 1
+        }
+        self
+    }
+
+    fn emit_line(mut self, s: str) -> CodeGen {
+        self.emit_indent()
+        self.output = self.output + s + "\n"
+        self
+    }
+}
+
+// Map Forge type names to C type names.
+fn c_type(ty: str) -> str {
+    if ty == "i8" { "int8_t" }
+    else if ty == "i16" { "int16_t" }
+    else if ty == "i32" { "int32_t" }
+    else if ty == "i64" { "int64_t" }
+    else if ty == "u8" { "uint8_t" }
+    else if ty == "u16" { "uint16_t" }
+    else if ty == "u32" { "uint32_t" }
+    else if ty == "u64" { "uint64_t" }
+    else if ty == "f32" { "float" }
+    else if ty == "f64" { "double" }
+    else if ty == "bool" { "bool" }
+    else if ty == "str" { "const char*" }
+    else if ty == "usize" { "size_t" }
+    else if ty == "isize" { "ptrdiff_t" }
+    else if ty == "" { "void" }
+    else if is_array_type(ty) {
+        // Store as ForgeArray<elem_c_type> for the type map, emit as ForgeArray in C
+        let elem = c_type(array_elem_type(ty))
+        "ForgeArray<" + elem + ">"
+    }
+    else { ty }
+}
+
+// Get the C type name for code emission (strips generics from ForgeArray<T>)
+fn c_emit_type(ty: str) -> str {
+    if ty.starts_with("ForgeArray") { "ForgeArray" }
+    else { ty }
+}
+
+// Extract element type from "ForgeArray<int32_t>" -> "int32_t"
+fn forge_array_elem(ty: str) -> str {
+    if ty.starts_with("ForgeArray<") {
+        ty.substring(11, ty.len() - 1)
+    } else {
+        "int64_t"
+    }
+}
+
+// Check if a type string is an array type like "[i32]"
+fn is_array_type(ty: str) -> bool {
+    if ty.len() >= 3 {
+        ty.char_at(0) == "["
+    } else {
+        false
+    }
+}
+
+// Extract element type from "[i32]" -> "i32", "[str]" -> "str"
+fn array_elem_type(ty: str) -> str {
+    if is_array_type(ty) {
+        ty.substring(1, ty.len() - 1)
+    } else {
+        ""
+    }
+}
+
+// Get the C element type for an array type string
+fn c_array_elem_type(ty: str) -> str {
+    c_type(array_elem_type(ty))
+}
+
+// ---- Pre-collect variable types from AST ----
+
+// Walk a function's params and body to build a flat name->type mapping.
+// Returns a string like "name1:type1,name2:type2,..."
+fn collect_fn_types(params: [Param], body: [Stmt], return_type: str, base_types: str) -> str {
+    let mut result = base_types
+    // Store return type so empty arrays can be typed from it
+    let ret = c_type(return_type)
+    if ret.starts_with("ForgeArray") {
+        if result.len() > 0 { result = result + "," }
+        result = result + "__return_type:" + ret
+    }
+    for param in params {
+        if param.name == "self" {
+            if result.len() > 0 { result = result + "," }
+            result = result + "self:Self"
+        } else {
+            if result.len() > 0 { result = result + "," }
+            result = result + param.name + ":" + c_type(param.ty)
+        }
+    }
+    for stmt in body {
+        result = collect_stmt_types(stmt, result)
+    }
+    result
+}
+
+fn collect_stmt_types(stmt: Stmt, result: str) -> str {
+    let mut r = result
+    if stmt.kind == "let" {
+        let ty = if stmt.ty != "" { c_type(stmt.ty) } else { infer_c_type_with_map(stmt.expr, r) }
+        if r.len() > 0 { r = r + "," }
+        r = r + stmt.name + ":" + ty
+    } else if stmt.kind == "expr" {
+        r = collect_expr_types(stmt.expr, r)
+    }
+    r
+}
+
+fn collect_expr_types(expr: Expr, result: str) -> str {
+    let mut r = result
+    if expr.kind == "for" {
+        let iter = expr.left[0]
+        if iter.kind == "binop" && iter.value == ".." {
+            if r.len() > 0 { r = r + "," }
+            r = r + expr.value + ":int64_t"
+        } else {
+            // Array iteration — try to infer element type from the iterable
+            let iter_type = infer_expr_type(iter, r)
+            let elem_t = if iter_type.starts_with("ForgeArray<") { forge_array_elem(iter_type) } else { "int64_t" }
+            if r.len() > 0 { r = r + "," }
+            r = r + expr.value + ":" + elem_t
+        }
+        // Recurse into for-loop body
+        for stmt in expr.body {
+            r = collect_stmt_types(stmt, r)
+        }
+    } else if expr.kind == "if" {
+        // Recurse into if/else bodies
+        for stmt in expr.body {
+            r = collect_stmt_types(stmt, r)
+        }
+        for stmt in expr.else_body {
+            r = collect_stmt_types(stmt, r)
+        }
+    } else if expr.kind == "while" {
+        for stmt in expr.body {
+            r = collect_stmt_types(stmt, r)
+        }
+    } else if expr.kind == "block" {
+        for stmt in expr.body {
+            r = collect_stmt_types(stmt, r)
+        }
+    }
+    r
+}
+
+// Build struct field type entries: "StructName.field1:type1,StructName.field2:type2,..."
+fn collect_struct_field_types(items: [Item]) -> str {
+    let mut result = ""
+    for item in items {
+        if item.kind == "struct" {
+            for field in item.fields {
+                if result.len() > 0 { result = result + "," }
+                result = result + item.name + "." + field.name + ":" + c_type(field.ty)
+            }
+        }
+    }
+    // Also collect function return types: __fn_name:return_type
+    for item in items {
+        if item.kind == "fn" {
+            let rt = c_type(item.return_type)
+            if rt != "void" {
+                if result.len() > 0 { result = result + "," }
+                result = result + "__fn_" + item.name + ":" + rt
+            }
+        }
+    }
+    // Collect impl method return types: __fn_Type_method:return_type
+    for item in items {
+        if item.kind == "impl" {
+            for method in item.methods {
+                let rt = c_type(method.return_type)
+                if rt != "void" {
+                    if result.len() > 0 { result = result + "," }
+                    result = result + "__fn_" + item.name + "_" + method.name + ":" + rt
+                }
+            }
+        }
+    }
+    result
+}
+
+fn lookup_type(type_map: str, name: str) -> str {
+    // Parse "name1:type1,name2:type2,..." and find the type for name
+    let mut i = 0
+    while i < type_map.len() {
+        // Find the next comma or end
+        let mut entry_end = i
+        let mut found_comma = false
+        while !found_comma {
+            if entry_end >= type_map.len() {
+                found_comma = true
+            } else if type_map.char_at(entry_end) == "," {
+                found_comma = true
+            } else {
+                entry_end = entry_end + 1
+            }
+        }
+        let entry = type_map.substring(i, entry_end)
+        // Split entry on first ":"
+        let mut colon = 0
+        let mut found_colon = false
+        while !found_colon {
+            if colon >= entry.len() {
+                found_colon = true
+            } else if entry.char_at(colon) == ":" {
+                found_colon = true
+            } else {
+                colon = colon + 1
+            }
+        }
+        if colon < entry.len() {
+            let entry_name = entry.substring(0, colon)
+            let entry_type = entry.substring(colon + 1, entry.len())
+            if entry_name == name {
+                return entry_type
+            }
+        }
+        i = entry_end + 1
+    }
+    ""
+}
+
+// ---- Top-level code generation ----
+
+fn generate(items: [Item]) -> str {
+    let mut gen = CodeGen.new()
+
+    // Emit C prelude
+    gen = gen.emit("// Generated by the Forge self-hosted compiler\n")
+    gen = gen.emit("#include <stdio.h>\n")
+    gen = gen.emit("#include <stdlib.h>\n")
+    gen = gen.emit("#include <stdint.h>\n")
+    gen = gen.emit("#include <stdbool.h>\n")
+    gen = gen.emit("#include <string.h>\n")
+    gen = gen.emit("#include <math.h>\n")
+    gen = gen.emit("#include <ctype.h>\n")
+    gen = gen.emit("\n")
+
+    // Emit runtime helpers
+    gen = gen.emit("// --- Forge runtime helpers ---\n")
+    gen = gen.emit("static char* forge_str_concat(const char* a, const char* b) \{\n")
+    gen = gen.emit("    size_t la = strlen(a), lb = strlen(b);\n")
+    gen = gen.emit("    char* r = malloc(la + lb + 1);\n")
+    gen = gen.emit("    memcpy(r, a, la);\n")
+    gen = gen.emit("    memcpy(r + la, b, lb + 1);\n")
+    gen = gen.emit("    return r;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static char* forge_i64_to_str(int64_t v) \{\n")
+    gen = gen.emit("    char* buf = malloc(32);\n")
+    gen = gen.emit("    snprintf(buf, 32, \"%lld\", (long long)v);\n")
+    gen = gen.emit("    return buf;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static char* forge_f64_to_str(double v) \{\n")
+    gen = gen.emit("    char* buf = malloc(64);\n")
+    gen = gen.emit("    snprintf(buf, 64, \"%g\", v);\n")
+    gen = gen.emit("    return buf;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static char* forge_bool_to_str(bool v) \{\n")
+    gen = gen.emit("    return v ? \"true\" : \"false\";\n")
+    gen = gen.emit("\}\n\n")
+
+    gen = gen.emit("static char* forge_char_at(const char* s, int64_t i) \{\n")
+    gen = gen.emit("    char* r = malloc(2);\n")
+    gen = gen.emit("    r[0] = s[i];\n")
+    gen = gen.emit("    r[1] = 0;\n")
+    gen = gen.emit("    return r;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static char* forge_substring(const char* s, int64_t start, int64_t end) \{\n")
+    gen = gen.emit("    int64_t len = end - start;\n")
+    gen = gen.emit("    char* r = malloc(len + 1);\n")
+    gen = gen.emit("    memcpy(r, s + start, len);\n")
+    gen = gen.emit("    r[len] = 0;\n")
+    gen = gen.emit("    return r;\n")
+    gen = gen.emit("\}\n\n")
+
+    // --- HashMap runtime (simple linear-search map) ---
+    gen = gen.emit("typedef struct \{\n")
+    gen = gen.emit("    const char** keys;\n")
+    gen = gen.emit("    int64_t len;\n")
+    gen = gen.emit("    int64_t cap;\n")
+    gen = gen.emit("\} ForgeHashMap;\n\n")
+    gen = gen.emit("static ForgeHashMap HashMap(void) \{\n")
+    gen = gen.emit("    ForgeHashMap m = \{NULL, 0, 0\};\n")
+    gen = gen.emit("    return m;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static ForgeHashMap forge_hashmap_insert(ForgeHashMap m, const char* key, bool val) \{\n")
+    gen = gen.emit("    if (m.len >= m.cap) \{\n")
+    gen = gen.emit("        int64_t new_cap = m.cap == 0 ? 16 : m.cap * 2;\n")
+    gen = gen.emit("        m.keys = realloc(m.keys, new_cap * sizeof(char*));\n")
+    gen = gen.emit("        m.cap = new_cap;\n")
+    gen = gen.emit("    \}\n")
+    gen = gen.emit("    m.keys[m.len++] = key;\n")
+    gen = gen.emit("    return m;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static bool forge_hashmap_contains_key(ForgeHashMap* m, const char* key) \{\n")
+    gen = gen.emit("    for (int64_t i = 0; i < m->len; i++)\n")
+    gen = gen.emit("        if (strcmp(m->keys[i], key) == 0) return true;\n")
+    gen = gen.emit("    return false;\n")
+    gen = gen.emit("\}\n\n")
+
+    // --- Array runtime ---
+    gen = gen.emit("typedef struct \{\n")
+    gen = gen.emit("    void* data;\n")
+    gen = gen.emit("    int64_t len;\n")
+    gen = gen.emit("    int64_t cap;\n")
+    gen = gen.emit("    int64_t elem_size;\n")
+    gen = gen.emit("\} ForgeArray;\n\n")
+    gen = gen.emit("static ForgeArray forge_array_new(int64_t elem_size) \{\n")
+    gen = gen.emit("    ForgeArray a = \{NULL, 0, 0, elem_size\};\n")
+    gen = gen.emit("    return a;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static ForgeArray forge_array_push(ForgeArray a, const void* elem) \{\n")
+    gen = gen.emit("    if (a.len >= a.cap) \{\n")
+    gen = gen.emit("        int64_t new_cap = a.cap == 0 ? 4 : a.cap * 2;\n")
+    gen = gen.emit("        void* new_data = realloc(a.data, new_cap * a.elem_size);\n")
+    gen = gen.emit("        a.data = new_data;\n")
+    gen = gen.emit("        a.cap = new_cap;\n")
+    gen = gen.emit("    \}\n")
+    gen = gen.emit("    memcpy((char*)a.data + a.len * a.elem_size, elem, a.elem_size);\n")
+    gen = gen.emit("    a.len++;\n")
+    gen = gen.emit("    return a;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static void* forge_array_get(ForgeArray* a, int64_t idx) \{\n")
+    gen = gen.emit("    return (char*)a->data + idx * a->elem_size;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static char* forge_array_i32_to_str(ForgeArray a) \{\n")
+    gen = gen.emit("    char* buf = malloc(a.len * 12 + 3);\n")
+    gen = gen.emit("    int pos = 0;\n")
+    gen = gen.emit("    pos += sprintf(buf + pos, \"[\");\n")
+    gen = gen.emit("    for (int64_t i = 0; i < a.len; i++) \{\n")
+    gen = gen.emit("        if (i > 0) pos += sprintf(buf + pos, \", \");\n")
+    gen = gen.emit("        int32_t v = *(int32_t*)forge_array_get(&a, i);\n")
+    gen = gen.emit("        pos += sprintf(buf + pos, \"%d\", v);\n")
+    gen = gen.emit("    \}\n")
+    gen = gen.emit("    sprintf(buf + pos, \"]\");\n")
+    gen = gen.emit("    return buf;\n")
+    gen = gen.emit("\}\n\n")
+
+    // Forward-declare structs
+    for item in items {
+        if item.kind == "struct" {
+            gen = gen.emit("typedef struct {item.name} {item.name};\n")
+        }
+    }
+    gen = gen.emit("\n")
+
+    // Emit struct definitions
+    for item in items {
+        if item.kind == "struct" {
+            gen = gen_struct(gen, item)
+        }
+    }
+
+    // Forward-declare all functions
+    for item in items {
+        if item.kind == "fn" {
+            gen = gen_fn_forward(gen, "", item)
+        }
+    }
+    for item in items {
+        if item.kind == "impl" {
+            for method in item.methods {
+                gen = gen_fn_forward(gen, item.name, method)
+            }
+        }
+    }
+    gen = gen.emit("\n")
+
+    // Build struct field type map
+    let field_types = collect_struct_field_types(items)
+
+    // Emit function definitions
+    for item in items {
+        if item.kind == "fn" {
+            gen = gen_fn(gen, "", item, field_types)
+        }
+    }
+
+    // Emit impl methods
+    for item in items {
+        if item.kind == "impl" {
+            for method in item.methods {
+                gen = gen_fn(gen, item.name, method, field_types)
+            }
+        }
+    }
+
+    gen.output
+}
+
+// ---- Struct generation ----
+
+fn gen_struct(gen: CodeGen, item: Item) -> CodeGen {
+    let mut g = gen
+    g = g.emit("struct {item.name} \{\n")
+    for field in item.fields {
+        g = g.emit("    {c_emit_type(c_type(field.ty))} {field.name};\n")
+    }
+    g = g.emit("\};\n\n")
+    g
+}
+
+// ---- Function forward declaration ----
+
+fn gen_fn_forward(gen: CodeGen, self_type: str, item: Item) -> CodeGen {
+    let mut g = gen
+    let mut ret = c_type(item.return_type)
+    let name = if self_type == "" { item.name } else { self_type + "_" + item.name }
+    if name == "main" { ret = "int" }
+    g = g.emit(c_emit_type(ret) + " " + name + "(")
+    if name == "main" {
+        g = g.emit("void")
+    } else {
+        g = gen_param_list(g, self_type, item.params)
+    }
+    g = g.emit(");\n")
+    g
+}
+
+// ---- Function definition ----
+
+fn gen_fn(gen: CodeGen, self_type: str, item: Item, field_types: str) -> CodeGen {
+    let mut g = gen
+    let mut ret = c_type(item.return_type)
+    let mut name = if self_type == "" { item.name } else { self_type + "_" + item.name }
+    let is_main = name == "main"
+    if is_main { ret = "int" }
+    g = g.emit(c_emit_type(ret) + " " + name + "(")
+    if is_main {
+        g = g.emit("void")
+    } else {
+        g = gen_param_list(g, self_type, item.params)
+    }
+    g = g.emit(") \{\n")
+    g.indent = g.indent + 1
+
+    // Pre-collect variable types for this function
+    // Include self_type and struct field types
+    let mut type_map = collect_fn_types(item.params, item.body, item.return_type, field_types)
+    if self_type != "" {
+        if type_map.len() > 0 { type_map = type_map + "," }
+        type_map = type_map + "__self_type:" + self_type
+    }
+
+    // Emit body statements
+    let mut i = 0
+    while i < item.body.len() {
+        let is_last = i == item.body.len() - 1
+        g = gen_stmt(g, item.body[i], is_last, ret, type_map)
+        i = i + 1
+    }
+
+    if is_main {
+        g = g.emit_line("return 0;")
+    }
+
+    g.indent = g.indent - 1
+    g = g.emit("\}\n\n")
+    g
+}
+
+fn gen_param_list(gen: CodeGen, self_type: str, params: [Param]) -> CodeGen {
+    let mut g = gen
+    let mut first = true
+    for param in params {
+        if !first { g = g.emit(", ") }
+        first = false
+        if param.name == "self" {
+            if param.mutable {
+                g = g.emit("{self_type}* self")
+            } else {
+                g = g.emit("{self_type} self")
+            }
+        } else {
+            let ty = param.ty
+            if ty.starts_with("&mut ") {
+                let inner = ty.substring(5, ty.len())
+                g = g.emit(c_emit_type(c_type(inner)) + "* " + param.name)
+            } else {
+                g = g.emit(c_emit_type(c_type(ty)) + " " + param.name)
+            }
+        }
+    }
+    if first {
+        g = g.emit("void")
+    }
+    g
+}
+
+// ---- Statement generation ----
+
+fn gen_stmt(gen: CodeGen, stmt: Stmt, is_last: bool, ret_type: str, type_map: str) -> CodeGen {
+    let mut g = gen
+    if stmt.kind == "let" {
+        g = g.emit_indent()
+        let ty = if stmt.ty != "" { c_type(stmt.ty) } else { infer_c_type_with_map(stmt.expr, type_map) }
+        g = g.emit(c_emit_type(ty) + " " + stmt.name)
+        if stmt.expr.kind != "none" {
+            g = g.emit(" = ")
+            g = gen_expr(g, stmt.expr, type_map)
+        }
+        g = g.emit(";\n")
+    } else if stmt.kind == "return" {
+        g = g.emit_indent()
+        if stmt.expr.kind != "none" {
+            g = g.emit("return ")
+            g = gen_expr(g, stmt.expr, type_map)
+            g = g.emit(";\n")
+        } else {
+            g = g.emit("return;\n")
+        }
+    } else if stmt.kind == "break" {
+        g = g.emit_line("break;")
+    } else if stmt.kind == "continue" {
+        g = g.emit_line("continue;")
+    } else if stmt.kind == "expr" {
+        let is_print_call = is_print_expr(stmt.expr)
+        if is_last && ret_type != "void" && ret_type != "int" && stmt.expr.kind != "assign" && stmt.expr.kind != "while" && stmt.expr.kind != "for" && !is_print_call {
+            if stmt.expr.kind == "if" {
+                // Emit if/else with returns in each branch
+                g = g.emit_indent()
+                g = gen_return_if(g, stmt.expr, type_map)
+                g = g.emit("\n")
+            } else {
+                g = g.emit_indent()
+                g = g.emit("return ")
+                g = gen_expr(g, stmt.expr, type_map)
+                g = g.emit(";\n")
+            }
+        } else {
+            g = g.emit_indent()
+            g = gen_expr(g, stmt.expr, type_map)
+            g = g.emit(";\n")
+        }
+    }
+    g
+}
+
+// ---- Expression generation ----
+
+fn gen_expr(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
+    let mut g = gen
+    if expr.kind == "int" {
+        g = g.emit(expr.value)
+    } else if expr.kind == "float" {
+        g = g.emit(expr.value)
+    } else if expr.kind == "bool" {
+        g = g.emit(expr.value)
+    } else if expr.kind == "string" {
+        let raw = strip_quotes(expr.value)
+        if has_interpolation(raw) {
+            g = gen_interpolated_string(g, raw, type_map)
+        } else {
+            g = g.emit("\"")
+            g = g.emit(escape_c_string(raw))
+            g = g.emit("\"")
+        }
+    } else if expr.kind == "ident" {
+        if expr.value == "self" {
+            g = g.emit("self")
+        } else {
+            g = g.emit(expr.value)
+        }
+    } else if expr.kind == "binop" && expr.value == ".." {
+        // Range as value — build a ForgeArray of int64_t
+        g = g.emit("(\{\n")
+        g.indent = g.indent + 1
+        g = g.emit_indent()
+        g = g.emit("ForgeArray _rng = forge_array_new(sizeof(int64_t));\n")
+        g = g.emit_indent()
+        g = g.emit("for (int64_t _ri = ")
+        g = gen_expr(g, expr.left[0], type_map)
+        g = g.emit("; _ri < ")
+        g = gen_expr(g, expr.right[0], type_map)
+        g = g.emit("; _ri++) _rng = forge_array_push(_rng, &_ri);\n")
+        g = g.emit_indent()
+        g = g.emit("_rng;\n")
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\})")
+    } else if expr.kind == "binop" {
+        // Check for operator overloading on struct types
+        let lhs_type = infer_expr_type(expr.left[0], type_map)
+        let mut resolved_type = lhs_type
+        if resolved_type == "Self" {
+            let st = lookup_type(type_map, "__self_type")
+            if st != "" { resolved_type = st }
+        }
+        let is_struct_op = resolved_type != "" && resolved_type != "const char*" && resolved_type != "int64_t" && resolved_type != "int32_t" && resolved_type != "double" && resolved_type != "float" && resolved_type != "bool"
+        if is_struct_op && expr.value == "+" {
+            g = g.emit(resolved_type + "_add(")
+            g = gen_expr(g, expr.left[0], type_map)
+            g = g.emit(", ")
+            g = gen_expr(g, expr.right[0], type_map)
+            g = g.emit(")")
+        } else if is_struct_op && expr.value == "-" {
+            g = g.emit(resolved_type + "_sub(")
+            g = gen_expr(g, expr.left[0], type_map)
+            g = g.emit(", ")
+            g = gen_expr(g, expr.right[0], type_map)
+            g = g.emit(")")
+        } else if is_struct_op && expr.value == "*" {
+            g = g.emit(resolved_type + "_mul(")
+            g = gen_expr(g, expr.left[0], type_map)
+            g = g.emit(", ")
+            g = gen_expr(g, expr.right[0], type_map)
+            g = g.emit(")")
+        } else if (expr.value == "==" || expr.value == "!=") && (resolved_type == "const char*" || infer_expr_type(expr.right[0], type_map) == "const char*") {
+            // String comparison: use strcmp
+            let right_type = infer_expr_type(expr.right[0], type_map)
+            if resolved_type == "const char*" || right_type == "const char*" {
+                if expr.value == "==" {
+                    g = g.emit("(strcmp(")
+                    g = gen_expr(g, expr.left[0], type_map)
+                    g = g.emit(", ")
+                    g = gen_expr(g, expr.right[0], type_map)
+                    g = g.emit(") == 0)")
+                } else {
+                    g = g.emit("(strcmp(")
+                    g = gen_expr(g, expr.left[0], type_map)
+                    g = g.emit(", ")
+                    g = gen_expr(g, expr.right[0], type_map)
+                    g = g.emit(") != 0)")
+                }
+            } else {
+                g = g.emit("(")
+                g = gen_expr(g, expr.left[0], type_map)
+                g = g.emit(" {expr.value} ")
+                g = gen_expr(g, expr.right[0], type_map)
+                g = g.emit(")")
+            }
+        } else if resolved_type == "const char*" && expr.value == "+" {
+            // String concatenation
+            g = g.emit("forge_str_concat(")
+            g = gen_expr(g, expr.left[0], type_map)
+            g = g.emit(", ")
+            g = gen_expr(g, expr.right[0], type_map)
+            g = g.emit(")")
+        } else {
+            g = g.emit("(")
+            g = gen_expr(g, expr.left[0], type_map)
+            g = g.emit(" {expr.value} ")
+            g = gen_expr(g, expr.right[0], type_map)
+            g = g.emit(")")
+        }
+    } else if expr.kind == "unaryop" {
+        g = g.emit("({expr.value}")
+        g = gen_expr(g, expr.left[0], type_map)
+        g = g.emit(")")
+    } else if expr.kind == "call" {
+        g = gen_call(g, expr, type_map)
+    } else if expr.kind == "field" {
+        g = gen_expr(g, expr.left[0], type_map)
+        g = g.emit(".{expr.value}")
+    } else if expr.kind == "index" {
+        // Check if indexing into a ForgeArray
+        let arr_type = infer_expr_type(expr.left[0], type_map)
+        if arr_type.starts_with("ForgeArray<") {
+            let elem_t = forge_array_elem(arr_type)
+            g = g.emit("*(" + elem_t + "*)forge_array_get(&")
+            g = gen_expr(g, expr.left[0], type_map)
+            g = g.emit(", ")
+            g = gen_expr(g, expr.right[0], type_map)
+            g = g.emit(")")
+        } else {
+            g = gen_expr(g, expr.left[0], type_map)
+            g = g.emit("[")
+            g = gen_expr(g, expr.right[0], type_map)
+            g = g.emit("]")
+        }
+    } else if expr.kind == "assign" {
+        g = gen_expr(g, expr.left[0], type_map)
+        g = g.emit(" = ")
+        g = gen_expr(g, expr.right[0], type_map)
+    } else if expr.kind == "if" {
+        // If both branches are single simple expressions (not if-chains), emit as ternary
+        let can_ternary = expr.body.len() == 1 && expr.else_body.len() == 1 && expr.body[0].kind == "expr" && expr.else_body[0].kind == "expr" && expr.else_body[0].expr.kind != "if" && expr.body[0].expr.kind != "assign" && expr.else_body[0].expr.kind != "assign"
+        if can_ternary {
+            g = g.emit("(")
+            g = gen_expr(g, expr.left[0], type_map)
+            g = g.emit(" ? ")
+            g = gen_expr(g, expr.body[0].expr, type_map)
+            g = g.emit(" : ")
+            g = gen_expr(g, expr.else_body[0].expr, type_map)
+            g = g.emit(")")
+        } else {
+            g = gen_if(g, expr, type_map)
+        }
+    } else if expr.kind == "while" {
+        g = gen_while(g, expr, type_map)
+    } else if expr.kind == "for" {
+        g = gen_for(g, expr, type_map)
+    } else if expr.kind == "block" {
+        g = g.emit("(\{\n")
+        g.indent = g.indent + 1
+        let mut i = 0
+        while i < expr.body.len() {
+            let is_last = i == expr.body.len() - 1
+            g = gen_stmt(g, expr.body[i], is_last, "auto", type_map)
+            i = i + 1
+        }
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\})")
+    } else if expr.kind == "struct_lit" {
+        g = gen_struct_lit(g, expr, type_map)
+    } else if expr.kind == "array" {
+        if expr.args.len() == 0 {
+            // Empty array — need to know elem size. Default to int64_t.
+            g = g.emit("forge_array_new(sizeof(int64_t))")
+        } else {
+            // Non-empty array literal [a, b, c]
+            // Infer element type from first element
+            let elem_ct = infer_c_type_with_map(expr.args[0], type_map)
+            let elem_ct = c_emit_type(elem_ct)
+            // Build up: push(push(push(new, &a), &b), &c)
+            let mut i = 0
+            while i < expr.args.len() {
+                g = g.emit("forge_array_push(")
+                i = i + 1
+            }
+            g = g.emit("forge_array_new(sizeof(" + elem_ct + "))")
+            let mut j = 0
+            while j < expr.args.len() {
+                let arg = expr.args[j]
+                if arg.kind == "ident" {
+                    // For identifiers, just take address directly
+                    g = g.emit(", &" + arg.value + ")")
+                } else if arg.kind == "int" || arg.kind == "float" {
+                    // For literals, use compound literal
+                    g = g.emit(", &(" + elem_ct + ")\{")
+                    g = gen_expr(g, arg, type_map)
+                    g = g.emit("\})")
+                } else {
+                    // For complex expressions, use compound literal
+                    g = g.emit(", &(" + elem_ct + ")\{")
+                    g = gen_expr(g, arg, type_map)
+                    g = g.emit("\})")
+                }
+                j = j + 1
+            }
+        }
+    } else if expr.kind == "none" {
+        // nothing
+    }
+    g
+}
+
+// ---- Call generation ----
+
+fn gen_call(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
+    let mut g = gen
+    let callee = expr.left[0]
+
+    if callee.kind == "ident" && callee.value == "__match" {
+        g = gen_match(g, expr.args, type_map)
+    } else if callee.kind == "ident" && callee.value == "print" {
+        g = gen_print(g, expr.args, type_map)
+    } else if callee.kind == "field" {
+        let obj = callee.left[0]
+        let method_name = callee.value
+
+        if obj.kind == "ident" && is_upper(obj.value) {
+            let mangled = obj.value + "_" + method_name
+            g = g.emit(mangled + "(")
+            let mut first = true
+            for arg in expr.args {
+                if !first { g = g.emit(", ") }
+                first = false
+                g = gen_expr(g, arg, type_map)
+            }
+            g = g.emit(")")
+        } else {
+            g = gen_method_call(g, obj, method_name, expr.args, type_map)
+        }
+    } else {
+        g = gen_expr(g, callee, type_map)
+        g = g.emit("(")
+        let mut first = true
+        for arg in expr.args {
+            if !first { g = g.emit(", ") }
+            first = false
+            g = gen_expr(g, arg, type_map)
+        }
+        g = g.emit(")")
+    }
+    g
+}
+
+fn is_print_expr(expr: Expr) -> bool {
+    if expr.kind == "call" {
+        let callee = expr.left[0]
+        if callee.kind == "ident" {
+            callee.value == "print"
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+fn is_upper(name: str) -> bool {
+    if name.len() == 0 { return false }
+    let fc = name.char_at(0)
+    fc == fc.to_upper()
+}
+
+fn gen_method_call(gen: CodeGen, obj: Expr, method: str, args: [Expr], type_map: str) -> CodeGen {
+    let mut g = gen
+    if method == "char_at" {
+        // str.char_at(i) -> forge_char_at(str, i) returning a single-char string
+        g = g.emit("forge_char_at(")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(", ")
+        if args.len() > 0 {
+            g = gen_expr(g, args[0], type_map)
+        }
+        g = g.emit(")")
+    } else if method == "is_digit" {
+        // Works on single-char strings
+        g = g.emit("isdigit((unsigned char)")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit("[0])")
+    } else if method == "is_alpha" {
+        g = g.emit("isalpha((unsigned char)")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit("[0])")
+    } else if method == "is_whitespace" {
+        g = g.emit("isspace((unsigned char)")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit("[0])")
+    } else if method == "insert" && infer_expr_type(obj, type_map) == "ForgeHashMap" {
+        if obj.kind == "ident" {
+            g = gen_expr(g, obj, type_map)
+            g = g.emit(" = ")
+        }
+        g = g.emit("forge_hashmap_insert(")
+        g = gen_expr(g, obj, type_map)
+        for arg in args {
+            g = g.emit(", ")
+            g = gen_expr(g, arg, type_map)
+        }
+        g = g.emit(")")
+    } else if method == "contains_key" && infer_expr_type(obj, type_map) == "ForgeHashMap" {
+        g = g.emit("forge_hashmap_contains_key(&")
+        g = gen_expr(g, obj, type_map)
+        for arg in args {
+            g = g.emit(", ")
+            g = gen_expr(g, arg, type_map)
+        }
+        g = g.emit(")")
+    } else if method == "sqrt" {
+        g = g.emit("sqrt(")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(")")
+    } else if method == "abs" {
+        g = g.emit("fabs(")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(")")
+    } else if method == "last" && infer_expr_type(obj, type_map).starts_with("ForgeArray") {
+        // .last() returns the array for Option-style matching (check len > 0, get last elem)
+        g = gen_expr(g, obj, type_map)
+    } else if method == "pop" && infer_expr_type(obj, type_map).starts_with("ForgeArray") {
+        // .pop() returns the array for Option-style matching
+        g = gen_expr(g, obj, type_map)
+    } else if method == "substring" {
+        // str.substring(start, end) -> forge_substring(str, start, end)
+        g = g.emit("forge_substring(")
+        g = gen_expr(g, obj, type_map)
+        for arg in args {
+            g = g.emit(", ")
+            g = gen_expr(g, arg, type_map)
+        }
+        g = g.emit(")")
+    } else if method == "len" && infer_expr_type(obj, type_map) == "const char*" {
+        g = g.emit("(int64_t)strlen(")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(")")
+    } else if method == "len" && infer_expr_type(obj, type_map).starts_with("ForgeArray") {
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(".len")
+    } else if method == "push" && infer_expr_type(obj, type_map).starts_with("ForgeArray<") {
+        let obj_type = infer_expr_type(obj, type_map)
+        let elem_t = forge_array_elem(obj_type)
+        // Auto-assign back: arr = forge_array_push(arr, &elem)
+        if obj.kind == "ident" {
+            g = gen_expr(g, obj, type_map)
+            g = g.emit(" = ")
+        }
+        g = g.emit("forge_array_push(")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(", &(" + elem_t + ")\{")
+        if args.len() > 0 {
+            g = gen_expr(g, args[0], type_map)
+        }
+        g = g.emit("\})")
+    } else if method == "map" && has_closure_arg(args, 0) {
+        let obj_type = infer_expr_type(obj, type_map)
+        let elem_t = if obj_type.starts_with("ForgeArray<") { forge_array_elem(obj_type) } else { "int64_t" }
+        let closure = args[0]
+        let param_name = get_closure_param(closure, 0)
+        let body_expr = get_closure_body(closure)
+        // Emit: ({ ForgeArray _src = obj; ForgeArray _dst = forge_array_new(sizeof(elem_t));
+        //          for(i=0;i<_src.len;i++) { elem_t param = get; elem_t _val = body; _dst = push(_dst, &_val); } _dst; })
+        g = g.emit("(\{\n")
+        g.indent = g.indent + 1
+        g = g.emit_line("ForgeArray _src = ")
+        // hack: re-emit on same line
+        g.output = g.output.substring(0, g.output.len() - 1)
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(";\n")
+        g = g.emit_line("ForgeArray _dst = forge_array_new(sizeof(" + elem_t + "));")
+        g = g.emit_line("for (int64_t _ci = 0; _ci < _src.len; _ci++) \{")
+        g.indent = g.indent + 1
+        g = g.emit_line(elem_t + " " + param_name + " = *(" + elem_t + "*)forge_array_get(&_src, _ci);")
+        g = g.emit_indent()
+        g = g.emit(elem_t + " _val = ")
+        g = gen_expr(g, body_expr, type_map)
+        g = g.emit(";\n")
+        g = g.emit_line("_dst = forge_array_push(_dst, &_val);")
+        g.indent = g.indent - 1
+        g = g.emit_line("\}")
+        g = g.emit_indent()
+        g = g.emit("_dst;\n")
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\})")
+    } else if method == "filter" && has_closure_arg(args, 0) {
+        let obj_type = infer_expr_type(obj, type_map)
+        let elem_t = if obj_type.starts_with("ForgeArray<") { forge_array_elem(obj_type) } else { "int64_t" }
+        let closure = args[0]
+        let param_name = get_closure_param(closure, 0)
+        let body_expr = get_closure_body(closure)
+        g = g.emit("(\{\n")
+        g.indent = g.indent + 1
+        g = g.emit_line("ForgeArray _src = ")
+        g.output = g.output.substring(0, g.output.len() - 1)
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(";\n")
+        g = g.emit_line("ForgeArray _dst = forge_array_new(sizeof(" + elem_t + "));")
+        g = g.emit_line("for (int64_t _ci = 0; _ci < _src.len; _ci++) \{")
+        g.indent = g.indent + 1
+        g = g.emit_line(elem_t + " " + param_name + " = *(" + elem_t + "*)forge_array_get(&_src, _ci);")
+        g = g.emit_indent()
+        g = g.emit("if (")
+        g = gen_expr(g, body_expr, type_map)
+        g = g.emit(") _dst = forge_array_push(_dst, &" + param_name + ");\n")
+        g.indent = g.indent - 1
+        g = g.emit_line("\}")
+        g = g.emit_indent()
+        g = g.emit("_dst;\n")
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\})")
+    } else if method == "fold" && has_closure_arg(args, 1) {
+        let obj_type = infer_expr_type(obj, type_map)
+        let elem_t = if obj_type.starts_with("ForgeArray<") { forge_array_elem(obj_type) } else { "int64_t" }
+        let closure = args[1]
+        let acc_name = get_closure_param(closure, 0)
+        let elem_name = get_closure_param(closure, 1)
+        let body_expr = get_closure_body(closure)
+        g = g.emit("(\{\n")
+        g.indent = g.indent + 1
+        g = g.emit_line("ForgeArray _src = ")
+        g.output = g.output.substring(0, g.output.len() - 1)
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(";\n")
+        g = g.emit_indent()
+        g = g.emit(elem_t + " " + acc_name + " = ")
+        g = gen_expr(g, args[0], type_map)
+        g = g.emit(";\n")
+        g = g.emit_line("for (int64_t _ci = 0; _ci < _src.len; _ci++) \{")
+        g.indent = g.indent + 1
+        g = g.emit_line(elem_t + " " + elem_name + " = *(" + elem_t + "*)forge_array_get(&_src, _ci);")
+        g = g.emit_indent()
+        g = g.emit(acc_name + " = ")
+        g = gen_expr(g, body_expr, type_map)
+        g = g.emit(";\n")
+        g.indent = g.indent - 1
+        g = g.emit_line("\}")
+        g = g.emit_indent()
+        g = g.emit(acc_name + ";\n")
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\})")
+    } else if method == "each" && has_closure_arg(args, 0) {
+        let obj_type = infer_expr_type(obj, type_map)
+        let elem_t = if obj_type.starts_with("ForgeArray<") { forge_array_elem(obj_type) } else { "int64_t" }
+        let closure = args[0]
+        let param_name = get_closure_param(closure, 0)
+        let body_expr = get_closure_body(closure)
+        g = g.emit("(\{\n")
+        g.indent = g.indent + 1
+        g = g.emit_line("ForgeArray _src = ")
+        g.output = g.output.substring(0, g.output.len() - 1)
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(";\n")
+        g = g.emit_line("for (int64_t _ci = 0; _ci < _src.len; _ci++) \{")
+        g.indent = g.indent + 1
+        g = g.emit_line(elem_t + " " + param_name + " = *(" + elem_t + "*)forge_array_get(&_src, _ci);")
+        g = g.emit_indent()
+        g = gen_expr(g, body_expr, type_map)
+        g = g.emit(";\n")
+        g.indent = g.indent - 1
+        g = g.emit_line("\}")
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\})")
+    } else if method == "to_str" || method == "to_string" {
+        g = g.emit("forge_i64_to_str(")
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(")")
+    } else {
+        // Try to resolve as Type_method(obj, args)
+        let mut obj_type = infer_expr_type(obj, type_map)
+        // Resolve "Self" to the actual type
+        if obj_type == "Self" {
+            let st = lookup_type(type_map, "__self_type")
+            if st != "" { obj_type = st }
+        }
+        if obj_type != "" && obj_type != "const char*" && obj_type != "int64_t" && obj_type != "int32_t" && obj_type != "double" && obj_type != "bool" && !obj_type.starts_with("ForgeArray") {
+            g = g.emit(c_emit_type(obj_type) + "_" + method + "(")
+            g = gen_expr(g, obj, type_map)
+            for arg in args {
+                g = g.emit(", ")
+                g = gen_expr(g, arg, type_map)
+            }
+            g = g.emit(")")
+        } else {
+            g = g.emit("/* ." + method + "() */0")
+        }
+    }
+    g
+}
+
+// Infer the C type of an expression using the type_map.
+fn infer_expr_type(expr: Expr, type_map: str) -> str {
+    if expr.kind == "ident" {
+        if expr.value == "self" { "Self" }
+        else { lookup_type(type_map, expr.value) }
+    } else if expr.kind == "field" {
+        // Field access: obj.field — resolve obj type, then look up StructType.field
+        let obj_type = infer_expr_type(expr.left[0], type_map)
+        let mut resolved = obj_type
+        if resolved == "Self" {
+            let st = lookup_type(type_map, "__self_type")
+            if st != "" { resolved = st }
+        }
+        if resolved != "" {
+            let field_key = resolved + "." + expr.value
+            let ft = lookup_type(type_map, field_key)
+            if ft != "" { ft }
+            else { "" }
+        } else { "" }
+    } else if expr.kind == "int" { "int64_t" }
+    else if expr.kind == "float" { "double" }
+    else if expr.kind == "bool" { "bool" }
+    else if expr.kind == "string" { "const char*" }
+    else { "" }
+}
+
+// ---- Print generation ----
+
+fn gen_print(gen: CodeGen, args: [Expr], type_map: str) -> CodeGen {
+    let mut g = gen
+    if args.len() == 0 {
+        g = g.emit("printf(\"\\n\")")
+        g
+    } else {
+        let arg = args[0]
+        if arg.kind == "string" {
+            let raw = strip_quotes(arg.value)
+            if has_interpolation(raw) {
+                g = g.emit("printf(\"%s\\n\", ")
+                g = gen_interpolated_string(g, raw, type_map)
+                g = g.emit(")")
+            } else {
+                g = g.emit("printf(\"%s\\n\", \"")
+                g = g.emit(escape_c_string(raw))
+                g = g.emit("\")")
+            }
+        } else {
+            g = g.emit("printf(\"%s\\n\", ")
+            g = gen_expr(g, arg, type_map)
+            g = g.emit(")")
+        }
+        g
+    }
+}
+
+// ---- Struct literal generation ----
+
+fn gen_struct_lit(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
+    let mut g = gen
+    g = g.emit("(" + expr.value + ")\{")
+    let mut first = true
+    for fexpr in expr.args {
+        if !first { g = g.emit(", ") }
+        first = false
+        if fexpr.kind == "binop" && fexpr.value == ":" {
+            g = g.emit("." + fexpr.left[0].value + " = ")
+            g = gen_expr(g, fexpr.right[0], type_map)
+        }
+    }
+    g = g.emit("\}")
+    g
+}
+
+// ---- Control flow ----
+
+fn gen_if(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
+    let mut g = gen
+    g = g.emit("if (")
+    g = gen_expr(g, expr.left[0], type_map)
+    g = g.emit(") \{\n")
+    g.indent = g.indent + 1
+    let mut i = 0
+    while i < expr.body.len() {
+        g = gen_stmt(g, expr.body[i], false, "void", type_map)
+        i = i + 1
+    }
+    g.indent = g.indent - 1
+    g = g.emit_indent()
+    g = g.emit("\}")
+    if expr.else_body.len() > 0 {
+        let first_else = expr.else_body[0]
+        if first_else.kind == "expr" && first_else.expr.kind == "if" {
+            g = g.emit(" else ")
+            g = gen_if(g, first_else.expr, type_map)
+        } else {
+            g = g.emit(" else \{\n")
+            g.indent = g.indent + 1
+            let mut j = 0
+            while j < expr.else_body.len() {
+                g = gen_stmt(g, expr.else_body[j], false, "void", type_map)
+                j = j + 1
+            }
+            g.indent = g.indent - 1
+            g = g.emit_indent()
+            g = g.emit("\}")
+        }
+    }
+    g
+}
+
+// Emit if/else as a return statement — each branch returns its last expression
+fn gen_return_if(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
+    let mut g = gen
+    g = g.emit("if (")
+    g = gen_expr(g, expr.left[0], type_map)
+    g = g.emit(") \{\n")
+    g.indent = g.indent + 1
+    // Then branch — return last expression
+    let mut i = 0
+    while i < expr.body.len() {
+        if i == expr.body.len() - 1 {
+            let last_stmt = expr.body[i]
+            if last_stmt.kind == "expr" {
+                g = g.emit_indent()
+                g = g.emit("return ")
+                g = gen_expr(g, last_stmt.expr, type_map)
+                g = g.emit(";\n")
+            } else {
+                g = gen_stmt(g, last_stmt, false, "void", type_map)
+            }
+        } else {
+            g = gen_stmt(g, expr.body[i], false, "void", type_map)
+        }
+        i = i + 1
+    }
+    g.indent = g.indent - 1
+    g = g.emit_indent()
+    g = g.emit("\}")
+    if expr.else_body.len() > 0 {
+        let first_else = expr.else_body[0]
+        if first_else.kind == "expr" && first_else.expr.kind == "if" {
+            g = g.emit(" else ")
+            g = gen_return_if(g, first_else.expr, type_map)
+        } else {
+            g = g.emit(" else \{\n")
+            g.indent = g.indent + 1
+            let mut j = 0
+            while j < expr.else_body.len() {
+                if j == expr.else_body.len() - 1 {
+                    let last_stmt = expr.else_body[j]
+                    if last_stmt.kind == "expr" {
+                        g = g.emit_indent()
+                        g = g.emit("return ")
+                        g = gen_expr(g, last_stmt.expr, type_map)
+                        g = g.emit(";\n")
+                    } else {
+                        g = gen_stmt(g, last_stmt, false, "void", type_map)
+                    }
+                } else {
+                    g = gen_stmt(g, expr.else_body[j], false, "void", type_map)
+                }
+                j = j + 1
+            }
+            g.indent = g.indent - 1
+            g = g.emit_indent()
+            g = g.emit("\}")
+        }
+    }
+    g
+}
+
+// Generate match expression as if/else chain.
+// For Some(val)/None patterns on arrays: check len > 0 and extract element.
+fn gen_match(gen: CodeGen, match_args: [Expr], type_map: str) -> CodeGen {
+    let mut g = gen
+    if match_args.len() < 2 {
+        g = g.emit("/* empty match */")
+        return g
+    }
+    let scrutinee = match_args[0]
+    // Generate: { type _scr = scrutinee; if (_scr.len > 0) { ... } else { ... } }
+    g = g.emit("\{\n")
+    g.indent = g.indent + 1
+    let scr_type = infer_expr_type(scrutinee, type_map)
+    g = g.emit_indent()
+    g = g.emit(c_emit_type(scr_type) + " _scr = ")
+    g = gen_expr(g, scrutinee, type_map)
+    g = g.emit(";\n")
+
+    let mut first_arm = true
+    let mut i = 1
+    while i < match_args.len() {
+        let arm = match_args[i]
+        // arm is binop("=>", binop(":", ident(pat), ident(binding)), body)
+        let pattern = arm.left[0]
+        let body = arm.right[0]
+        let pat_name = pattern.left[0].value
+        let binding = pattern.right[0].value
+
+        g = g.emit_indent()
+        if first_arm {
+            first_arm = false
+        } else {
+            g = g.emit("else ")
+        }
+
+        if pat_name == "Some" {
+            g = g.emit("if (_scr.len > 0) \{\n")
+            g.indent = g.indent + 1
+            if binding != "" {
+                let elem_t = if scr_type.starts_with("ForgeArray<") { forge_array_elem(scr_type) } else { "int64_t" }
+                g = g.emit_line(elem_t + " " + binding + " = *(" + elem_t + "*)forge_array_get(&_scr, _scr.len - 1);")
+            }
+            g = g.emit_indent()
+            g = gen_expr(g, body, type_map)
+            g = g.emit(";\n")
+            g.indent = g.indent - 1
+            g = g.emit_line("\}")
+        } else if pat_name == "None" {
+            g = g.emit("if (_scr.len == 0) \{\n")
+            g.indent = g.indent + 1
+            g = g.emit_indent()
+            g = gen_expr(g, body, type_map)
+            g = g.emit(";\n")
+            g.indent = g.indent - 1
+            g = g.emit_line("\}")
+        } else {
+            // Generic pattern — emit as comment
+            g = g.emit("/* match " + pat_name + " */ \{\n")
+            g.indent = g.indent + 1
+            g = g.emit_indent()
+            g = gen_expr(g, body, type_map)
+            g = g.emit(";\n")
+            g.indent = g.indent - 1
+            g = g.emit_line("\}")
+        }
+        i = i + 1
+    }
+
+    g.indent = g.indent - 1
+    g = g.emit_indent()
+    g = g.emit("\}")
+    g
+}
+
+fn gen_while(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
+    let mut g = gen
+    g = g.emit("while (")
+    g = gen_expr(g, expr.left[0], type_map)
+    g = g.emit(") \{\n")
+    g.indent = g.indent + 1
+    for stmt in expr.body {
+        g = gen_stmt(g, stmt, false, "void", type_map)
+    }
+    g.indent = g.indent - 1
+    g = g.emit_indent()
+    g = g.emit("\}")
+    g
+}
+
+fn gen_for(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
+    let mut g = gen
+    let binding = expr.value
+    let iter = expr.left[0]
+
+    // Check if iterating over a range (binop "..")
+    if iter.kind == "binop" && iter.value == ".." {
+        g = g.emit("for (int64_t " + binding + " = ")
+        g = gen_expr(g, iter.left[0], type_map)
+        g = g.emit("; " + binding + " < ")
+        g = gen_expr(g, iter.right[0], type_map)
+        g = g.emit("; " + binding + "++) \{\n")
+        g.indent = g.indent + 1
+        for stmt in expr.body {
+            g = gen_stmt(g, stmt, false, "void", type_map)
+        }
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\}")
+    } else {
+        // Array iteration — emit as indexed loop over a ForgeArray
+        let iter_type = infer_expr_type(iter, type_map)
+        let elem_t = if iter_type.starts_with("ForgeArray<") { forge_array_elem(iter_type) } else { "int64_t" }
+        g = g.emit("\{\n")
+        g.indent = g.indent + 1
+        g = g.emit_indent()
+        g = g.emit("ForgeArray _iter = ")
+        g = gen_expr(g, iter, type_map)
+        g = g.emit(";\n")
+        g = g.emit_indent()
+        g = g.emit("for (int64_t _i = 0; _i < _iter.len; _i++) \{\n")
+        g.indent = g.indent + 1
+        g = g.emit_indent()
+        g = g.emit(elem_t + " " + binding + " = *(" + elem_t + "*)forge_array_get(&_iter, _i);\n")
+        for stmt in expr.body {
+            g = gen_stmt(g, stmt, false, "void", type_map)
+        }
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\}\n")
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\}")
+    }
+    g
+}
+
+// ---- String interpolation ----
+
+fn gen_interpolated_string(gen: CodeGen, s: str, type_map: str) -> CodeGen {
+    let mut g = gen
+    let mut parts = []
+    let mut i = 0
+    let mut current = ""
+    while i < s.len() {
+        let c = s.char_at(i)
+        if c == "\\" {
+            if i + 1 < s.len() {
+                let next = s.char_at(i + 1)
+                current = current + c + next
+                i = i + 2
+            } else {
+                current = current + c
+                i = i + 1
+            }
+        } else if c == "\{" {
+            if current.len() > 0 {
+                parts.push("s:" + current)
+                current = ""
+            }
+            i = i + 1
+            let mut expr_str = ""
+            let mut depth = 1
+            while i < s.len() && depth > 0 {
+                let ic = s.char_at(i)
+                if ic == "\{" { depth = depth + 1 }
+                else if ic == "\}" { depth = depth - 1 }
+                if depth > 0 {
+                    expr_str = expr_str + ic
+                }
+                i = i + 1
+            }
+            parts.push("e:" + expr_str)
+        } else {
+            current = current + c
+            i = i + 1
+        }
+    }
+    if current.len() > 0 {
+        parts.push("s:" + current)
+    }
+
+    if parts.len() == 0 {
+        g = g.emit("\"\"")
+    } else if parts.len() == 1 {
+        g = gen_interp_part(g, parts[0], type_map)
+    } else {
+        let mut j = 0
+        while j < parts.len() - 1 {
+            g = g.emit("forge_str_concat(")
+            j = j + 1
+        }
+        g = gen_interp_part(g, parts[0], type_map)
+        let mut j2 = 1
+        while j2 < parts.len() {
+            g = g.emit(", ")
+            g = gen_interp_part(g, parts[j2], type_map)
+            g = g.emit(")")
+            j2 = j2 + 1
+        }
+    }
+    g
+}
+
+fn gen_interp_part(gen: CodeGen, part: str, type_map: str) -> CodeGen {
+    let mut g = gen
+    let tag = part.substring(0, 2)
+    let content = part.substring(2, part.len())
+    if tag == "s:" {
+        g = g.emit("\"")
+        g = g.emit(escape_c_string(content))
+        g = g.emit("\"")
+    } else {
+        // Look up variable type to emit the right to_str conversion
+        let var_type = lookup_type(type_map, content)
+        if var_type == "const char*" || var_type == "char*" {
+            g = g.emit(content)
+        } else if var_type == "int64_t" || var_type == "int32_t" {
+            g = g.emit("forge_i64_to_str((int64_t)" + content + ")")
+        } else if var_type == "double" || var_type == "float" {
+            g = g.emit("forge_f64_to_str((double)" + content + ")")
+        } else if var_type == "bool" {
+            g = g.emit("forge_bool_to_str(" + content + ")")
+        } else if var_type.starts_with("ForgeArray") {
+            g = g.emit("forge_array_i32_to_str(" + content + ")")
+        } else if content.contains("(") {
+            // Check for .len() on ForgeArrays first
+            let dot_p = find_char(content, ".")
+            let mut handled = false
+            if dot_p < content.len() {
+                let interp_obj = content.substring(0, dot_p)
+                let interp_obj_type = lookup_type(type_map, interp_obj)
+                if interp_obj_type.starts_with("ForgeArray") {
+                    let interp_rest = content.substring(dot_p + 1, content.len())
+                    if interp_rest == "len()" {
+                        g = g.emit("forge_i64_to_str(" + interp_obj + ".len)")
+                        handled = true
+                    }
+                }
+            }
+            if handled {
+                // already emitted above
+            } else {
+            let rewritten = rewrite_interp_expr(content, type_map)
+            let ret_hint = guess_interp_return_type(content, type_map)
+            if ret_hint == "const char*" {
+                g = g.emit(rewritten)
+            } else if ret_hint == "int64_t" || ret_hint == "int32_t" {
+                g = g.emit("forge_i64_to_str((int64_t)" + rewritten + ")")
+            } else if ret_hint == "bool" {
+                g = g.emit("forge_bool_to_str(" + rewritten + ")")
+            } else if ret_hint == "ForgeArray" || ret_hint.starts_with("ForgeArray") {
+                g = g.emit("forge_array_i32_to_str(" + rewritten + ")")
+            } else {
+                g = g.emit("forge_f64_to_str(" + rewritten + ")")
+            }
+            }
+        } else if content.contains(".") {
+            // Field access — look up the field type via StructType.field in type_map
+            let dot_pos = find_char(content, ".")
+            let field_obj = content.substring(0, dot_pos)
+            let field_name = content.substring(dot_pos + 1, content.len())
+            let mut obj_type = lookup_type(type_map, field_obj)
+            if obj_type == "Self" {
+                let st = lookup_type(type_map, "__self_type")
+                if st != "" { obj_type = st }
+            }
+            // Look up StructType.fieldName
+            let field_type = if obj_type != "" { lookup_type(type_map, obj_type + "." + field_name) } else { "" }
+            if field_type == "const char*" {
+                g = g.emit(content)
+            } else if field_type == "int64_t" || field_type == "int32_t" {
+                g = g.emit("forge_i64_to_str((int64_t)" + content + ")")
+            } else if field_type == "bool" {
+                g = g.emit("forge_bool_to_str(" + content + ")")
+            } else {
+                // Default to double
+                g = g.emit("forge_f64_to_str(" + content + ")")
+            }
+        } else if content.contains("[") {
+            // Array indexing in interpolation: arr[i] → typed get
+            let bracket = find_char(content, "[")
+            let arr_name = content.substring(0, bracket)
+            let idx_str = content.substring(bracket + 1, content.len() - 1)
+            let arr_type = lookup_type(type_map, arr_name)
+            if arr_type.starts_with("ForgeArray<") {
+                let elem_t = forge_array_elem(arr_type)
+                g = g.emit("forge_i64_to_str((int64_t)*(" + elem_t + "*)forge_array_get(&" + arr_name + ", " + idx_str + "))")
+            } else {
+                g = g.emit("forge_i64_to_str((int64_t)" + content + ")")
+            }
+        } else {
+            // Unknown type — default to int-to-string for simple identifiers
+            g = g.emit("forge_i64_to_str((int64_t)" + content + ")")
+        }
+    }
+    g
+}
+
+// Rewrite interpolation expressions like "a.length()", "a.normalized().x"
+fn rewrite_interp_expr(content: str, type_map: str) -> str {
+    // Check for trailing ".field" after ")"
+    // e.g., "a.normalized().x" -> rewrite "a.normalized()" then ".x"
+    let mut last_paren = 0
+    let mut i = 0
+    while i < content.len() {
+        if content.char_at(i) == ")" { last_paren = i }
+        i = i + 1
+    }
+    if last_paren > 0 && last_paren + 1 < content.len() {
+        // There's something after the last ")" — e.g., ".x"
+        let call_part = content.substring(0, last_paren + 1)
+        let field_part = content.substring(last_paren + 1, content.len())
+        rewrite_method_call(call_part, type_map) + field_part
+    } else {
+        rewrite_method_call(content, type_map)
+    }
+}
+
+// Rewrite "a.method()" to "Type_method(a)" for interpolation expressions
+fn rewrite_method_call(content: str, type_map: str) -> str {
+    // Find the first "."
+    let mut dot = 0
+    let mut found = false
+    while !found {
+        if dot >= content.len() { found = true }
+        else if content.char_at(dot) == "." { found = true }
+        else { dot = dot + 1 }
+    }
+    if dot >= content.len() { return content }
+    let obj = content.substring(0, dot)
+    let rest = content.substring(dot + 1, content.len())
+    // Find "(" in rest
+    let mut paren = 0
+    let mut found2 = false
+    while !found2 {
+        if paren >= rest.len() { found2 = true }
+        else if rest.char_at(paren) == "(" { found2 = true }
+        else { paren = paren + 1 }
+    }
+    let method = rest.substring(0, paren)
+    // Extract arguments between "(" and ")"
+    let mut args_str = ""
+    if paren < rest.len() {
+        // rest from paren is "(args)"
+        let inner = rest.substring(paren + 1, rest.len() - 1)
+        if inner.len() > 0 {
+            args_str = ", " + inner
+        }
+    }
+    // Look up object type
+    let obj_type = lookup_type(type_map, obj)
+    // ForgeArray special methods
+    if obj_type.starts_with("ForgeArray") {
+        if method == "len" { obj + ".len" }
+        else { content }
+    } else if obj_type == "const char*" {
+        if method == "len" { "(int64_t)strlen(" + obj + ")" }
+        else if method == "char_at" { "forge_char_at(" + obj + args_str + ")" }
+        else if method == "substring" { "forge_substring(" + obj + args_str + ")" }
+        else { content }
+    } else if obj_type != "" && obj_type != "int64_t" && obj_type != "double" && obj_type != "bool" {
+        c_emit_type(obj_type) + "_" + method + "(" + obj + args_str + ")"
+    } else {
+        content
+    }
+}
+
+// Check if an expression is a closure: call(ident("__closure"), [params_str, body])
+fn has_closure_arg(args: [Expr], idx: i64) -> bool {
+    if idx >= args.len() { return false }
+    is_closure(args[idx])
+}
+
+fn is_closure(expr: Expr) -> bool {
+    if expr.kind != "call" { return false }
+    if expr.left.len() == 0 { return false }
+    let callee = expr.left[0]
+    if callee.kind != "ident" { return false }
+    callee.value == "__closure"
+}
+
+// Get the nth parameter name from a closure
+fn get_closure_param(closure: Expr, n: i64) -> str {
+    // closure.args[0] is a string like "x" or "acc,x"
+    let params_str = closure.args[0].value
+    // Strip quotes if present
+    let ps = strip_quotes(params_str)
+    if n == 0 {
+        let comma = find_char(ps, ",")
+        if comma < ps.len() { ps.substring(0, comma) }
+        else { ps }
+    } else {
+        let comma = find_char(ps, ",")
+        if comma < ps.len() { ps.substring(comma + 1, ps.len()) }
+        else { "" }
+    }
+}
+
+// Get the body expression from a closure
+fn get_closure_body(closure: Expr) -> Expr {
+    closure.args[1]
+}
+
+fn find_char(s: str, ch: str) -> i64 {
+    let mut i = 0
+    while i < s.len() {
+        if s.char_at(i) == ch { return i }
+        i = i + 1
+    }
+    s.len()
+}
+
+// Guess the return type of a method call expression in string interpolation.
+// content is like "buf.size()" or "greet(name)"
+fn guess_interp_return_type(content: str, type_map: str) -> str {
+    // Find the method name
+    let dot_pos = find_char(content, ".")
+    if dot_pos >= content.len() {
+        // No dot — free function call, default to int64_t
+        return "int64_t"
+    }
+    let obj = content.substring(0, dot_pos)
+    let rest = content.substring(dot_pos + 1, content.len())
+    let paren_pos = find_char(rest, "(")
+    let method = if paren_pos < rest.len() { rest.substring(0, paren_pos) } else { rest }
+
+    // Known methods that return specific types
+    if method == "len" || method == "size" || method == "count" { return "int64_t" }
+    if method == "peek" { return "int64_t" }
+    if method == "to_str" || method == "to_string" || method == "describe" || method == "name" { return "const char*" }
+    if method == "length" || method == "sqrt" || method == "abs" { return "double" }
+    if method == "is_empty" || method == "contains" || method == "starts_with" { return "bool" }
+    if method == "to_array" { return "ForgeArray" }
+
+    // Check if the method is likely a getter returning the object's field type
+    // Default: double (most numeric methods return double)
+    "double"
+}
+
+// ---- Helpers ----
+
+fn escape_c_string(s: str) -> str {
+    let mut result = ""
+    let mut i = 0
+    while i < s.len() {
+        let c = s.char_at(i)
+        if c == "\"" { result = result + "\\\"" }
+        else if c == "\\" { result = result + "\\\\" }
+        else if c == "\n" { result = result + "\\n" }
+        else if c == "\t" { result = result + "\\t" }
+        else { result = result + c }
+        i = i + 1
+    }
+    result
+}
+
+fn strip_quotes(s: str) -> str {
+    if s.len() >= 2 {
+        let first = s.char_at(0)
+        if first == "\"" {
+            s.substring(1, s.len() - 1)
+        } else {
+            s
+        }
+    } else {
+        s
+    }
+}
+
+fn has_interpolation(s: str) -> bool {
+    let mut i = 0
+    while i < s.len() {
+        let c = s.char_at(i)
+        if c == "\\" {
+            i = i + 2
+        } else if c == "\{" {
+            return true
+        } else {
+            i = i + 1
+        }
+    }
+    false
+}
+
+fn infer_c_type_with_map(expr: Expr, type_map: str) -> str {
+    if expr.kind == "binop" && expr.value == ".." {
+        "ForgeArray<int64_t>"
+    } else if expr.kind == "binop" {
+        let lt = infer_expr_type(expr.left[0], type_map)
+        let rt = infer_expr_type(expr.right[0], type_map)
+        if lt != "" && lt != "const char*" && lt != "int64_t" && lt != "int32_t" && lt != "double" && lt != "float" && lt != "bool" {
+            lt
+        } else if rt != "" && rt != "const char*" && rt != "int64_t" && rt != "int32_t" && rt != "double" && rt != "float" && rt != "bool" {
+            rt
+        } else {
+            infer_c_type(expr)
+        }
+    } else if expr.kind == "call" {
+        let callee = expr.left[0]
+        if callee.kind == "field" && callee.value == "new" {
+            let obj = callee.left[0]
+            if obj.kind == "ident" { obj.value }
+            else { infer_c_type(expr) }
+        } else if callee.kind == "field" {
+            // Method call — check object type and method name
+            let obj = callee.left[0]
+            let method_name = callee.value
+            let obj_type = infer_expr_type(obj, type_map)
+            if obj_type.starts_with("ForgeArray") {
+                // Array methods
+                if method_name == "push" || method_name == "map" || method_name == "filter" || method_name == "last" || method_name == "pop" { obj_type }
+                else if method_name == "len" || method_name == "fold" { "int64_t" }
+                else { "int64_t" }
+            } else if obj_type == "const char*" {
+                // String methods
+                if method_name == "char_at" { "const char*" }
+                else if method_name == "substring" { "const char*" }
+                else if method_name == "len" { "int64_t" }
+                else if method_name == "is_digit" || method_name == "is_alpha" || method_name == "is_whitespace" { "bool" }
+                else { "const char*" }
+            } else if obj_type == "char" {
+                if method_name == "is_digit" || method_name == "is_alpha" || method_name == "is_whitespace" { "bool" }
+                else { "int64_t" }
+            } else if obj_type != "" && obj_type != "int64_t" && obj_type != "int32_t" && obj_type != "double" && obj_type != "float" && obj_type != "bool" {
+                // Method on a struct — try to guess from method name
+                if method_name == "len" || method_name == "size" || method_name == "count" { "int64_t" }
+                else { "double" }
+            } else { infer_c_type(expr) }
+        } else if callee.kind == "ident" {
+            // Free function call — look up return type
+            let fn_ret = lookup_type(type_map, "__fn_" + callee.value)
+            if fn_ret != "" { fn_ret }
+            else { infer_c_type(expr) }
+        } else { infer_c_type(expr) }
+    } else if expr.kind == "ident" {
+        let t = lookup_type(type_map, expr.value)
+        if t != "" { t } else { infer_c_type(expr) }
+    } else if expr.kind == "array" {
+        if expr.args.len() > 0 {
+            let elem_t = infer_c_type_with_map(expr.args[0], type_map)
+            let elem_t = c_emit_type(elem_t)
+            "ForgeArray<" + elem_t + ">"
+        } else {
+            // Empty array — try to use function return type
+            let ret_t = lookup_type(type_map, "__return_type")
+            if ret_t.starts_with("ForgeArray") { ret_t }
+            else { "ForgeArray<int64_t>" }
+        }
+    } else {
+        infer_c_type(expr)
+    }
+}
+
+fn infer_c_type(expr: Expr) -> str {
+    if expr.kind == "int" { "int64_t" }
+    else if expr.kind == "float" { "double" }
+    else if expr.kind == "bool" { "bool" }
+    else if expr.kind == "string" { "const char*" }
+    else if expr.kind == "struct_lit" { expr.value }
+    else if expr.kind == "call" {
+        let callee = expr.left[0]
+        if callee.kind == "ident" && callee.value == "HashMap" { "ForgeHashMap" }
+        else if callee.kind == "field" && callee.value == "new" {
+            let obj = callee.left[0]
+            if obj.kind == "ident" { obj.value }
+            else { "int64_t" }
+        } else if callee.kind == "field" {
+            // Method call — try to infer return type from method name
+            let obj = callee.left[0]
+            if obj.kind == "ident" {
+                let first_char = obj.value.char_at(0)
+                if first_char == first_char.to_upper() {
+                    // Static call on a type, e.g. Vec2.new()
+                    obj.value
+                } else { "int64_t" }
+            } else { "int64_t" }
+        } else { "int64_t" }
+    }
+    else if expr.kind == "binop" {
+        let lt = infer_c_type(expr.left[0])
+        if lt == "double" || infer_c_type(expr.right[0]) == "double" { "double" }
+        else if lt == "const char*" { "const char*" }
+        else { lt }
+    }
+    else if expr.kind == "array" {
+        // Array literal — try to infer element type from first element
+        if expr.args.len() > 0 {
+            let elem_t = infer_c_type(expr.args[0])
+            "ForgeArray"
+        } else {
+            "ForgeArray"
+        }
+    }
+    else { "int64_t" }
+}

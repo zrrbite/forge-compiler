@@ -1,11 +1,12 @@
 use std::env;
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process;
 
 use forge::codegen;
 use forge::hir::lower::lower;
-use forge::interpreter::Interpreter;
+use forge::interpreter::{Interpreter, Value};
 use forge::lexer::Lexer;
 use forge::parser::Parser;
 
@@ -18,6 +19,7 @@ fn main() {
     let mut compile = false;
     let mut output = None;
     let mut filename = None;
+    let mut eval_expr = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -26,38 +28,62 @@ fn main() {
             "--ast" => dump_ast = true,
             "--ir" => dump_ir = true,
             "--compile" | "-c" => compile = true,
+            "-e" => {
+                i += 1;
+                if i < args.len() {
+                    eval_expr = Some(args[i].clone());
+                }
+            }
             "-o" => {
                 i += 1;
                 if i < args.len() {
                     output = Some(args[i].clone());
                 }
             }
-            _ => filename = Some(args[i].as_str()),
+            _ => {
+                if filename.is_none() {
+                    filename = Some(args[i].as_str());
+                }
+                // Extra positional args are available to the script via args()
+            }
         }
         i += 1;
+    }
+
+    // -e flag: evaluate an expression directly
+    if let Some(expr) = eval_expr {
+        let source = format!("fn main() {{\n{expr}\n}}");
+        let (tokens, _) = Lexer::new(&source).tokenize();
+        let (program, _) = Parser::new(tokens).parse();
+        let mut interp = Interpreter::new();
+        if let Err(e) = interp.run(&program) {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+        return;
     }
 
     let filename = match filename {
         Some(f) => f,
         None => {
-            eprintln!("Usage: forge [options] <file.fg>");
-            eprintln!("Options:");
-            eprintln!("  --tokens     Dump token stream");
-            eprintln!("  --ast        Dump AST");
-            eprintln!("  --ir         Dump LLVM IR");
-            eprintln!("  --compile    Compile to native binary (default: interpret)");
-            eprintln!("  -o <file>    Output binary name (with --compile)");
-            process::exit(1);
+            // No file given — launch REPL
+            run_repl();
+            return;
         }
     };
 
-    let source = match fs::read_to_string(filename) {
+    let mut source = match fs::read_to_string(filename) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error reading {filename}: {e}");
             process::exit(1);
         }
     };
+
+    // Skip shebang line (#!/usr/bin/env forge)
+    if source.starts_with("#!") {
+        source = source.lines().skip(1).collect::<Vec<_>>().join("\n");
+    }
 
     // Lex
     let (tokens, lex_errors) = Lexer::new(&source).tokenize();
@@ -77,7 +103,26 @@ fn main() {
 
     // Parse
     let (mut program, parse_errors) = Parser::new(tokens).parse();
-    if !parse_errors.is_empty() {
+
+    // Implicit main: if parse fails or no fn main() exists, try wrapping in fn main() { ... }
+    let has_main = program
+        .items
+        .iter()
+        .any(|item| matches!(&item.kind, forge::ast::ItemKind::Function(f) if f.name == "main"));
+    if !has_main {
+        let wrapped = format!("fn main() {{\n{source}\n}}");
+        let (wrapped_tokens, _) = Lexer::new(&wrapped).tokenize();
+        let (wrapped_program, wrapped_errors) = Parser::new(wrapped_tokens).parse();
+        if wrapped_errors.is_empty() {
+            program = wrapped_program;
+        } else if !parse_errors.is_empty() {
+            // Both failed — show original errors
+            for err in &parse_errors {
+                eprintln!("{err}");
+            }
+            process::exit(1);
+        }
+    } else if !parse_errors.is_empty() {
         for err in &parse_errors {
             eprintln!("{err}");
         }
@@ -135,5 +180,130 @@ fn main() {
             eprintln!("{e}");
             process::exit(1);
         }
+    }
+}
+
+fn run_repl() {
+    eprintln!("Forge REPL (type Ctrl-D to exit)");
+    let stdin = io::stdin();
+    let mut interp = Interpreter::new();
+    let mut buffer = String::new();
+    let mut continuation = false;
+
+    loop {
+        // Prompt
+        if continuation {
+            eprint!("... ");
+        } else {
+            eprint!(">>> ");
+        }
+        io::stderr().flush().ok();
+
+        // Read line
+        let mut line = String::new();
+        match stdin.lock().read_line(&mut line) {
+            Ok(0) => {
+                eprintln!();
+                break; // EOF (Ctrl-D)
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Read error: {e}");
+                break;
+            }
+        }
+
+        buffer.push_str(&line);
+
+        // Check for incomplete input (unclosed braces)
+        let open = buffer.chars().filter(|&c| c == '{').count();
+        let close = buffer.chars().filter(|&c| c == '}').count();
+        if open > close {
+            continuation = true;
+            continue;
+        }
+        continuation = false;
+
+        let input = buffer.trim().to_string();
+        buffer.clear();
+        if input.is_empty() {
+            continue;
+        }
+
+        // Try to parse as-is first (might be a fn/struct definition)
+        let (tokens, lex_errors) = Lexer::new(&input).tokenize();
+        if !lex_errors.is_empty() {
+            // Try wrapping in main
+            let wrapped = format!("fn main() {{\n{input}\n}}");
+            let (wtokens, wlex_errors) = Lexer::new(&wrapped).tokenize();
+            if !wlex_errors.is_empty() {
+                for err in &wlex_errors {
+                    eprintln!("{err}");
+                }
+                continue;
+            }
+            let (program, parse_errors) = forge::parser::Parser::new(wtokens).parse();
+            if !parse_errors.is_empty() {
+                for err in &parse_errors {
+                    eprintln!("{err}");
+                }
+                continue;
+            }
+            match interp.eval_repl(&program) {
+                Ok(Some(val)) => print_repl_value(&val),
+                Ok(None) => {}
+                Err(e) => eprintln!("{e}"),
+            }
+            continue;
+        }
+
+        let (program, parse_errors) = forge::parser::Parser::new(tokens).parse();
+
+        // If parsing as items succeeded and has items, register them
+        let has_items = !program.items.is_empty() && parse_errors.is_empty();
+        if has_items {
+            // Check if any item is a real definition (not a failed parse)
+            let has_main = program.items.iter().any(
+                |item| matches!(&item.kind, forge::ast::ItemKind::Function(f) if f.name == "main"),
+            );
+            if has_main {
+                // User defined main inline — run it
+                match interp.eval_repl(&program) {
+                    Ok(Some(val)) => print_repl_value(&val),
+                    Ok(None) => {}
+                    Err(e) => eprintln!("{e}"),
+                }
+            } else {
+                // Register definitions (fn, struct, impl)
+                match interp.eval_repl(&program) {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("{e}"),
+                }
+            }
+            continue;
+        }
+
+        // Try wrapping in fn main() for expressions/statements
+        let wrapped = format!("fn main() {{\n{input}\n}}");
+        let (wtokens, _) = Lexer::new(&wrapped).tokenize();
+        let (program, parse_errors) = forge::parser::Parser::new(wtokens).parse();
+        if !parse_errors.is_empty() {
+            for err in &parse_errors {
+                eprintln!("{err}");
+            }
+            continue;
+        }
+        match interp.eval_repl(&program) {
+            Ok(Some(val)) => print_repl_value(&val),
+            Ok(None) => {}
+            Err(e) => eprintln!("{e}"),
+        }
+    }
+}
+
+fn print_repl_value(val: &Value) {
+    match val {
+        Value::Unit => {} // Don't print ()
+        _ => println!("{val}"),
     }
 }

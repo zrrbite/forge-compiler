@@ -1,0 +1,28 @@
+// Test the self-hosted codegen: lex, parse, and emit C for hello.fg
+use lexer
+use ast
+use parser
+use codegen
+
+fn main() {
+    let source = File.read("tests/samples/hello.fg").unwrap()
+    let raw_tokens = tokenize(source)
+    let tokens = collapse_newlines(raw_tokens)
+
+    print("Lexed {tokens.len()} tokens")
+
+    let mut p = Parser.new(tokens)
+    let items = parse_program(p)
+
+    print("Parsed {items.len()} items:")
+    for item in items {
+        print("  {item.describe()}")
+    }
+
+    print("")
+    print("=== Generated C code ===")
+    print("")
+
+    let c_code = generate(items)
+    print(c_code)
+}

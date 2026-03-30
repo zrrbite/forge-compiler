@@ -1,0 +1,15 @@
+// Test the self-hosted lexer by reading and tokenizing a real .fg file.
+use lexer
+
+fn main() {
+    let source = File.read("tests/samples/hello.fg").unwrap()
+    let raw_tokens = tokenize(source)
+    let tokens = collapse_newlines(raw_tokens)
+
+    print("Tokens: {tokens.len()}")
+    print("")
+
+    for tok in tokens {
+        print("  {tok.describe()}")
+    }
+}
