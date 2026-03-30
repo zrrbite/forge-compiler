@@ -767,6 +767,34 @@ impl Parser {
                         kind: ExprKind::Try(Box::new(lhs)),
                     }
                 }
+                TokenKind::QuestionDot => {
+                    self.advance();
+                    let (field, field_span) = self.expect_identifier()?;
+
+                    // Check for safe method call: expr?.method(args)
+                    if *self.peek_kind() == TokenKind::LParen {
+                        self.advance();
+                        let args = self.parse_call_args()?;
+                        let end = self.expect(&TokenKind::RParen)?;
+                        Expr {
+                            span: Span::new(lhs.span.start, end.end),
+                            kind: ExprKind::SafeNav {
+                                object: Box::new(lhs),
+                                field,
+                                call_args: Some(args),
+                            },
+                        }
+                    } else {
+                        Expr {
+                            span: Span::new(lhs.span.start, field_span.end),
+                            kind: ExprKind::SafeNav {
+                                object: Box::new(lhs),
+                                field,
+                                call_args: None,
+                            },
+                        }
+                    }
+                }
                 TokenKind::Dot => {
                     self.advance();
                     let (field, field_span) = self.expect_identifier()?;
@@ -900,6 +928,23 @@ impl Parser {
                             start: Some(Box::new(lhs)),
                             end,
                             inclusive,
+                        },
+                    };
+                    continue;
+                }
+                // Null coalescing operator: expr ?? default
+                TokenKind::QuestionQuestion => {
+                    let (l_bp, _) = (1, 2); // Same precedence as range (very low)
+                    if l_bp < min_bp {
+                        break;
+                    }
+                    self.advance();
+                    let default = self.parse_expr_bp(2)?;
+                    lhs = Expr {
+                        span: Span::new(lhs.span.start, default.span.end),
+                        kind: ExprKind::NullCoalesce {
+                            expr: Box::new(lhs),
+                            default: Box::new(default),
                         },
                     };
                     continue;

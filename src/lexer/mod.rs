@@ -269,7 +269,21 @@ impl<'src> Lexer<'src> {
 
             b'?' => {
                 self.advance();
-                Some(Token::new(TokenKind::Question, Span::new(start, self.pos)))
+                if !self.is_at_end() && self.peek() == b'.' {
+                    self.advance();
+                    Some(Token::new(
+                        TokenKind::QuestionDot,
+                        Span::new(start, self.pos),
+                    ))
+                } else if !self.is_at_end() && self.peek() == b'?' {
+                    self.advance();
+                    Some(Token::new(
+                        TokenKind::QuestionQuestion,
+                        Span::new(start, self.pos),
+                    ))
+                } else {
+                    Some(Token::new(TokenKind::Question, Span::new(start, self.pos)))
+                }
             }
             b'@' => {
                 self.advance();

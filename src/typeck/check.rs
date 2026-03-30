@@ -667,6 +667,23 @@ impl TypeChecker {
                 self.check_expr(inner)
             }
 
+            HirExprKind::SafeNav {
+                object, call_args, ..
+            } => {
+                self.check_expr(object);
+                if let Some(args) = call_args {
+                    for arg in args {
+                        self.check_expr(arg);
+                    }
+                }
+                self.unifier.fresh_var()
+            }
+
+            HirExprKind::NullCoalesce { expr, default } => {
+                self.check_expr(expr);
+                self.check_expr(default)
+            }
+
             HirExprKind::Turbofish { expr: inner, .. } => {
                 // Type params are used for resolution — just check the inner expr.
                 self.check_expr(inner)

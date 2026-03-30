@@ -265,6 +265,15 @@ pub enum HirExprKind {
 
     // -- Error handling --
     Try(Box<HirExpr>),
+    SafeNav {
+        object: Box<HirExpr>,
+        field: String,
+        call_args: Option<Vec<HirExpr>>,
+    },
+    NullCoalesce {
+        expr: Box<HirExpr>,
+        default: Box<HirExpr>,
+    },
 
     // -- Range --
     Range {

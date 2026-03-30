@@ -221,6 +221,14 @@ pub enum ExprKind {
     },
     /// Error propagation: `expr?`
     Try(Box<Expr>),
+    /// Safe navigation: `expr?.field` or `expr?.method(args)`
+    SafeNav {
+        object: Box<Expr>,
+        field: String,
+        call_args: Option<Vec<Expr>>,
+    },
+    /// Null coalescing: `expr ?? default`
+    NullCoalesce { expr: Box<Expr>, default: Box<Expr> },
     /// Turbofish: `expr::<Type>`
     Turbofish {
         expr: Box<Expr>,
