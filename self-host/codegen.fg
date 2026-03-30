@@ -102,8 +102,14 @@ fn c_array_elem_type(ty: str) -> str {
 
 // Walk a function's params and body to build a flat name->type mapping.
 // Returns a string like "name1:type1,name2:type2,..."
-fn collect_fn_types(params: [Param], body: [Stmt]) -> str {
-    let mut result = ""
+fn collect_fn_types(params: [Param], body: [Stmt], return_type: str, base_types: str) -> str {
+    let mut result = base_types
+    // Store return type so empty arrays can be typed from it
+    let ret = c_type(return_type)
+    if ret.starts_with("ForgeArray") {
+        if result.len() > 0 { result = result + "," }
+        result = result + "__return_type:" + ret
+    }
     for param in params {
         if param.name == "self" {
             if result.len() > 0 { result = result + "," }
@@ -177,6 +183,28 @@ fn collect_struct_field_types(items: [Item]) -> str {
             for field in item.fields {
                 if result.len() > 0 { result = result + "," }
                 result = result + item.name + "." + field.name + ":" + c_type(field.ty)
+            }
+        }
+    }
+    // Also collect function return types: __fn_name:return_type
+    for item in items {
+        if item.kind == "fn" {
+            let rt = c_type(item.return_type)
+            if rt != "void" {
+                if result.len() > 0 { result = result + "," }
+                result = result + "__fn_" + item.name + ":" + rt
+            }
+        }
+    }
+    // Collect impl method return types: __fn_Type_method:return_type
+    for item in items {
+        if item.kind == "impl" {
+            for method in item.methods {
+                let rt = c_type(method.return_type)
+                if rt != "void" {
+                    if result.len() > 0 { result = result + "," }
+                    result = result + "__fn_" + item.name + "_" + method.name + ":" + rt
+                }
             }
         }
     }
@@ -275,6 +303,31 @@ fn generate(items: [Item]) -> str {
     gen = gen.emit("    memcpy(r, s + start, len);\n")
     gen = gen.emit("    r[len] = 0;\n")
     gen = gen.emit("    return r;\n")
+    gen = gen.emit("\}\n\n")
+
+    // --- HashMap runtime (simple linear-search map) ---
+    gen = gen.emit("typedef struct \{\n")
+    gen = gen.emit("    const char** keys;\n")
+    gen = gen.emit("    int64_t len;\n")
+    gen = gen.emit("    int64_t cap;\n")
+    gen = gen.emit("\} ForgeHashMap;\n\n")
+    gen = gen.emit("static ForgeHashMap HashMap(void) \{\n")
+    gen = gen.emit("    ForgeHashMap m = \{NULL, 0, 0\};\n")
+    gen = gen.emit("    return m;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static ForgeHashMap forge_hashmap_insert(ForgeHashMap m, const char* key, bool val) \{\n")
+    gen = gen.emit("    if (m.len >= m.cap) \{\n")
+    gen = gen.emit("        int64_t new_cap = m.cap == 0 ? 16 : m.cap * 2;\n")
+    gen = gen.emit("        m.keys = realloc(m.keys, new_cap * sizeof(char*));\n")
+    gen = gen.emit("        m.cap = new_cap;\n")
+    gen = gen.emit("    \}\n")
+    gen = gen.emit("    m.keys[m.len++] = key;\n")
+    gen = gen.emit("    return m;\n")
+    gen = gen.emit("\}\n")
+    gen = gen.emit("static bool forge_hashmap_contains_key(ForgeHashMap* m, const char* key) \{\n")
+    gen = gen.emit("    for (int64_t i = 0; i < m->len; i++)\n")
+    gen = gen.emit("        if (strcmp(m->keys[i], key) == 0) return true;\n")
+    gen = gen.emit("    return false;\n")
     gen = gen.emit("\}\n\n")
 
     // --- Array runtime ---
@@ -415,14 +468,10 @@ fn gen_fn(gen: CodeGen, self_type: str, item: Item, field_types: str) -> CodeGen
 
     // Pre-collect variable types for this function
     // Include self_type and struct field types
-    let mut type_map = collect_fn_types(item.params, item.body)
+    let mut type_map = collect_fn_types(item.params, item.body, item.return_type, field_types)
     if self_type != "" {
         if type_map.len() > 0 { type_map = type_map + "," }
         type_map = type_map + "__self_type:" + self_type
-    }
-    if field_types.len() > 0 {
-        if type_map.len() > 0 { type_map = type_map + "," }
-        type_map = type_map + field_types
     }
 
     // Emit body statements
@@ -780,6 +829,26 @@ fn gen_method_call(gen: CodeGen, obj: Expr, method: str, args: [Expr], type_map:
         g = g.emit("isspace((unsigned char)")
         g = gen_expr(g, obj, type_map)
         g = g.emit("[0])")
+    } else if method == "insert" && infer_expr_type(obj, type_map) == "ForgeHashMap" {
+        if obj.kind == "ident" {
+            g = gen_expr(g, obj, type_map)
+            g = g.emit(" = ")
+        }
+        g = g.emit("forge_hashmap_insert(")
+        g = gen_expr(g, obj, type_map)
+        for arg in args {
+            g = g.emit(", ")
+            g = gen_expr(g, arg, type_map)
+        }
+        g = g.emit(")")
+    } else if method == "contains_key" && infer_expr_type(obj, type_map) == "ForgeHashMap" {
+        g = g.emit("forge_hashmap_contains_key(&")
+        g = gen_expr(g, obj, type_map)
+        for arg in args {
+            g = g.emit(", ")
+            g = gen_expr(g, arg, type_map)
+        }
+        g = g.emit(")")
     } else if method == "sqrt" {
         g = g.emit("sqrt(")
         g = gen_expr(g, obj, type_map)
@@ -807,6 +876,11 @@ fn gen_method_call(gen: CodeGen, obj: Expr, method: str, args: [Expr], type_map:
     } else if method == "push" && infer_expr_type(obj, type_map).starts_with("ForgeArray<") {
         let obj_type = infer_expr_type(obj, type_map)
         let elem_t = forge_array_elem(obj_type)
+        // Auto-assign back: arr = forge_array_push(arr, &elem)
+        if obj.kind == "ident" {
+            g = gen_expr(g, obj, type_map)
+            g = g.emit(" = ")
+        }
         g = g.emit("forge_array_push(")
         g = gen_expr(g, obj, type_map)
         g = g.emit(", &(" + elem_t + ")\{")
@@ -1163,7 +1237,23 @@ fn gen_interp_part(gen: CodeGen, part: str, type_map: str) -> CodeGen {
         } else if var_type.starts_with("ForgeArray") {
             g = g.emit("forge_array_i32_to_str(" + content + ")")
         } else if content.contains("(") {
-            // Method call in interpolation — rewrite and wrap with appropriate to_str
+            // Check for .len() on ForgeArrays first
+            let dot_p = find_char(content, ".")
+            let mut handled = false
+            if dot_p < content.len() {
+                let interp_obj = content.substring(0, dot_p)
+                let interp_obj_type = lookup_type(type_map, interp_obj)
+                if interp_obj_type.starts_with("ForgeArray") {
+                    let interp_rest = content.substring(dot_p + 1, content.len())
+                    if interp_rest == "len()" {
+                        g = g.emit("forge_i64_to_str(" + interp_obj + ".len)")
+                        handled = true
+                    }
+                }
+            }
+            if handled {
+                // already emitted above
+            } else {
             let rewritten = rewrite_interp_expr(content, type_map)
             let ret_hint = guess_interp_return_type(content, type_map)
             if ret_hint == "const char*" {
@@ -1176,6 +1266,7 @@ fn gen_interp_part(gen: CodeGen, part: str, type_map: str) -> CodeGen {
                 g = g.emit("forge_array_i32_to_str(" + rewritten + ")")
             } else {
                 g = g.emit("forge_f64_to_str(" + rewritten + ")")
+            }
             }
         } else if content.contains(".") {
             // Field access — look up the field type via StructType.field in type_map
@@ -1259,8 +1350,17 @@ fn rewrite_method_call(content: str, type_map: str) -> str {
     }
     // Look up object type
     let obj_type = lookup_type(type_map, obj)
-    if obj_type != "" && obj_type != "const char*" && obj_type != "int64_t" && obj_type != "double" && obj_type != "bool" {
-        obj_type + "_" + method + "(" + obj + args_str + ")"
+    // ForgeArray special methods
+    if obj_type.starts_with("ForgeArray") {
+        if method == "len" { obj + ".len" }
+        else { content }
+    } else if obj_type == "const char*" {
+        if method == "len" { "(int64_t)strlen(" + obj + ")" }
+        else if method == "char_at" { "forge_char_at(" + obj + args_str + ")" }
+        else if method == "substring" { "forge_substring(" + obj + args_str + ")" }
+        else { content }
+    } else if obj_type != "" && obj_type != "int64_t" && obj_type != "double" && obj_type != "bool" {
+        c_emit_type(obj_type) + "_" + method + "(" + obj + args_str + ")"
     } else {
         content
     }
@@ -1389,6 +1489,11 @@ fn infer_c_type_with_map(expr: Expr, type_map: str) -> str {
                 if method_name == "len" || method_name == "size" || method_name == "count" { "int64_t" }
                 else { "double" }
             } else { infer_c_type(expr) }
+        } else if callee.kind == "ident" {
+            // Free function call — look up return type
+            let fn_ret = lookup_type(type_map, "__fn_" + callee.value)
+            if fn_ret != "" { fn_ret }
+            else { infer_c_type(expr) }
         } else { infer_c_type(expr) }
     } else if expr.kind == "ident" {
         let t = lookup_type(type_map, expr.value)
@@ -1399,7 +1504,10 @@ fn infer_c_type_with_map(expr: Expr, type_map: str) -> str {
             let elem_t = c_emit_type(elem_t)
             "ForgeArray<" + elem_t + ">"
         } else {
-            "ForgeArray<int64_t>"
+            // Empty array — try to use function return type
+            let ret_t = lookup_type(type_map, "__return_type")
+            if ret_t.starts_with("ForgeArray") { ret_t }
+            else { "ForgeArray<int64_t>" }
         }
     } else {
         infer_c_type(expr)
@@ -1414,7 +1522,8 @@ fn infer_c_type(expr: Expr) -> str {
     else if expr.kind == "struct_lit" { expr.value }
     else if expr.kind == "call" {
         let callee = expr.left[0]
-        if callee.kind == "field" && callee.value == "new" {
+        if callee.kind == "ident" && callee.value == "HashMap" { "ForgeHashMap" }
+        else if callee.kind == "field" && callee.value == "new" {
             let obj = callee.left[0]
             if obj.kind == "ident" { obj.value }
             else { "int64_t" }
