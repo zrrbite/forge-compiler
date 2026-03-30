@@ -12,3 +12,4 @@ vec2
 .vscode/
 .idea/
 editors/vscode/*.vsix
+editors/vscode/node_modules/
