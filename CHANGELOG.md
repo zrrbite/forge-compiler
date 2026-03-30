@@ -2,6 +2,21 @@
 
 All notable changes to the Forge programming language and compiler.
 
+## [Unreleased]
+
+### Compiled Mode
+- String concatenation (`+`) and comparison (`==`, `!=`) via LLVM runtime
+- Array `push()` and `for x in arr` iteration
+- Array `map`, `filter`, `fold`, `each` with closures (indirect calls)
+
+### Tooling
+- GitHub Actions CI: tests, clippy, format check on every PR
+- Language server (`forge-lsp`) with real-time diagnostics for Neovim
+
+### Fixes
+- Remove unused import warning in m7_modules tests
+- Suppress dead_code warning in m3_generics tests
+
 ## [0.7.0] — 2026-03-30
 
 **First public release.**

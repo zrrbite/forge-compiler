@@ -13,5 +13,11 @@ categories = ["compilers", "development-tools"]
 name = "forge"
 path = "src/main.rs"
 
+[[bin]]
+name = "forge-lsp"
+path = "src/lsp.rs"
+
 [dependencies]
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm21-1"] }
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
