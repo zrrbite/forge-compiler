@@ -1,6 +1,12 @@
 # Forge Language Server
 
-The Forge LSP provides real-time diagnostics (error highlighting) in your editor.
+LSP server for the Forge programming language. Provides IDE features in Neovim.
+
+## Features
+
+- **Diagnostics** — lex and parse errors shown as you type
+- **Go to definition** (`gd`) — jump to function, struct, method, variable definitions
+- **Hover** (`K`) — show function signatures, struct fields, builtin docs
 
 ## Build
 
@@ -8,11 +14,9 @@ The Forge LSP provides real-time diagnostics (error highlighting) in your editor
 cargo build --release --bin forge-lsp
 ```
 
-The binary is at `target/release/forge-lsp`.
-
 ## Neovim Setup
 
-Add to your Neovim config (e.g., `~/.config/nvim/init.lua`):
+Add to `~/.config/nvim/init.lua`:
 
 ```lua
 vim.api.nvim_create_autocmd("FileType", {
@@ -27,22 +31,25 @@ vim.api.nvim_create_autocmd("FileType", {
 })
 ```
 
-Replace `/path/to/forge-compiler` with the actual path.
+## Usage
 
-## VS Code Setup
+| Keybinding | Action |
+|------------|--------|
+| `gd` | Go to definition |
+| `K` | Hover (show type info) |
+| (automatic) | Error diagnostics as you type |
+| `<space>e` | Show diagnostic at cursor (add keymap: `vim.keymap.set('n', '<leader>e', vim.diagnostic.open_float)`) |
 
-The VS Code extension currently provides syntax highlighting only.
-LSP integration requires a JS activation script — coming in a future update.
+## What Hover Shows
 
-For now, you can use the generic LSP client extension and point it at `forge-lsp`.
+- **Functions**: `fn greet(name: str) -> str`
+- **Structs**: field listing with types
+- **Methods**: `fn Vec2.length(self) -> f64`
+- **Variables**: `let mut count: i64`
+- **Builtins**: `fn print(value) — print to stdout`
 
-## Features
+## Planned
 
-### Currently supported
-- **Diagnostics**: lex and parse errors shown as you type
-
-### Planned
-- Go to definition
-- Hover for type info
 - Autocomplete
 - Rename symbol
+- Find references

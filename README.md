@@ -398,7 +398,7 @@ across Forge, Rust, C++, Zig, and Go.
 
 - [Neovim/Vim](editors/nvim/) — syntax highlighting (symlink ftdetect + syntax)
 - [VS Code](editors/vscode/) — syntax highlighting (install via vsix)
-- [Language Server](editors/lsp/) — real-time diagnostics in Neovim
+- [Language Server](editors/lsp/) — diagnostics, go-to-definition, hover
 
 ```bash
 # Build the LSP server
