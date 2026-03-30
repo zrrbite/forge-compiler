@@ -164,6 +164,17 @@ impl<'ctx> Codegen<'ctx> {
         self.module.print_to_string().to_string()
     }
 
+    /// Returns the LLVM struct type for Forge arrays: { ptr, i64 } (data, len).
+    fn array_type(&self) -> StructType<'ctx> {
+        self.context.struct_type(
+            &[
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.context.i64_type().into(),
+            ],
+            false,
+        )
+    }
+
     // ── Scope ───────────────────────────────────────────────────────────
 
     fn push_scope(&mut self) {
@@ -567,9 +578,45 @@ impl<'ctx> Codegen<'ctx> {
             }
 
             HirExprKind::Index { object, index } => {
-                // Basic array indexing — not yet implemented for compiled code.
-                let _ = (object, index);
-                Ok(self.context.i64_type().const_int(0, false).into())
+                let arr = self.compile_expr(object, function)?;
+                let idx = self.compile_expr(index, function)?;
+                // If it's an array struct { ptr, i64 }, extract data pointer and index
+                if arr.get_type() == self.array_type().into() {
+                    let arr_alloca = self
+                        .builder
+                        .build_alloca(self.array_type(), "idx_arr")
+                        .unwrap();
+                    self.builder.build_store(arr_alloca, arr).unwrap();
+                    let data_ptr = self
+                        .builder
+                        .build_struct_gep(self.array_type(), arr_alloca, 0, "data_ptr")
+                        .unwrap();
+                    let data = self
+                        .builder
+                        .build_load(
+                            self.context.ptr_type(AddressSpace::default()),
+                            data_ptr,
+                            "data",
+                        )
+                        .unwrap();
+                    let elem_ptr = unsafe {
+                        self.builder
+                            .build_gep(
+                                self.context.i64_type(),
+                                data.into_pointer_value(),
+                                &[idx.into_int_value()],
+                                "elem",
+                            )
+                            .unwrap()
+                    };
+                    let val = self
+                        .builder
+                        .build_load(self.context.i64_type(), elem_ptr, "elem_val")
+                        .unwrap();
+                    Ok(val)
+                } else {
+                    Ok(self.context.i64_type().const_int(0, false).into())
+                }
             }
 
             HirExprKind::Slice { object, start, end } => {
@@ -579,10 +626,73 @@ impl<'ctx> Codegen<'ctx> {
             }
 
             HirExprKind::Array(elements) => {
+                let arr_type = self.array_type();
                 if elements.is_empty() {
-                    return Ok(self.context.i64_type().const_int(0, false).into());
+                    // Empty array: { null, 0 }
+                    let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
+                    let zero = self.context.i64_type().const_int(0, false);
+                    let arr = arr_type.const_named_struct(&[null_ptr.into(), zero.into()]);
+                    return Ok(arr.into());
                 }
-                self.compile_expr(&elements[0], function)
+                // Non-empty array: malloc + store elements
+                let len = elements.len();
+                let total_size = self.context.i64_type().const_int((len * 8) as u64, false);
+                // Call malloc
+                let malloc_type = self
+                    .context
+                    .ptr_type(AddressSpace::default())
+                    .fn_type(&[self.context.i64_type().into()], false);
+                let malloc_fn = self
+                    .module
+                    .get_function("malloc")
+                    .unwrap_or_else(|| self.module.add_function("malloc", malloc_type, None));
+                let data_ptr = match self
+                    .builder
+                    .build_call(malloc_fn, &[total_size.into()], "arr_data")
+                    .unwrap()
+                    .try_as_basic_value()
+                {
+                    inkwell::values::ValueKind::Basic(val) => val,
+                    _ => self
+                        .context
+                        .ptr_type(AddressSpace::default())
+                        .const_null()
+                        .into(),
+                };
+                // Store each element
+                for (i, elem) in elements.iter().enumerate() {
+                    let val = self.compile_expr(elem, function)?;
+                    let offset = self.context.i64_type().const_int(i as u64, false);
+                    let elem_ptr = unsafe {
+                        self.builder
+                            .build_gep(
+                                self.context.i64_type(),
+                                data_ptr.into_pointer_value(),
+                                &[offset],
+                                "elem_ptr",
+                            )
+                            .unwrap()
+                    };
+                    self.builder.build_store(elem_ptr, val).unwrap();
+                }
+                // Build { ptr, len } struct
+                let len_val = self.context.i64_type().const_int(len as u64, false);
+                let arr_alloca = self.builder.build_alloca(arr_type, "arr").unwrap();
+                let data_field = self
+                    .builder
+                    .build_struct_gep(arr_type, arr_alloca, 0, "arr.data")
+                    .unwrap();
+                self.builder.build_store(data_field, data_ptr).unwrap();
+                let len_field = self
+                    .builder
+                    .build_struct_gep(arr_type, arr_alloca, 1, "arr.len")
+                    .unwrap();
+                self.builder.build_store(len_field, len_val).unwrap();
+                let arr_val = self
+                    .builder
+                    .build_load(arr_type, arr_alloca, "arr_val")
+                    .unwrap();
+                Ok(arr_val)
             }
 
             HirExprKind::Range { start, end, .. } => {
@@ -847,6 +957,27 @@ impl<'ctx> Codegen<'ctx> {
         args: &[HirExpr],
         function: FunctionValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        // Built-in method: array.len()
+        if method == "len" {
+            let obj = self.compile_expr(object, function)?;
+            if obj.get_type() == self.array_type().into() {
+                let arr_alloca = self
+                    .builder
+                    .build_alloca(self.array_type(), "len_arr")
+                    .unwrap();
+                self.builder.build_store(arr_alloca, obj).unwrap();
+                let len_ptr = self
+                    .builder
+                    .build_struct_gep(self.array_type(), arr_alloca, 1, "len_ptr")
+                    .unwrap();
+                let len = self
+                    .builder
+                    .build_load(self.context.i64_type(), len_ptr, "len")
+                    .unwrap();
+                return Ok(len);
+            }
+        }
+
         // Built-in method: float.sqrt()
         if method == "sqrt" {
             let obj = self.compile_expr(object, function)?;
@@ -1524,7 +1655,7 @@ impl<'ctx> Codegen<'ctx> {
             HirTypeKind::Reference { .. } => {
                 Ok(self.context.ptr_type(AddressSpace::default()).into())
             }
-            HirTypeKind::Array { .. } => Ok(self.context.ptr_type(AddressSpace::default()).into()),
+            HirTypeKind::Array { .. } => Ok(self.array_type().into()),
             _ => Ok(self.context.i64_type().into()),
         }
     }
