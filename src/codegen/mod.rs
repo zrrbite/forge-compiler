@@ -1179,6 +1179,16 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
 
+        // Built-in array methods: map, filter, fold, each
+        if (method == "map" || method == "filter" || method == "fold" || method == "each")
+            && !args.is_empty()
+        {
+            let obj = self.compile_expr(object, function)?;
+            if obj.get_type() == self.array_type().into() {
+                return self.compile_array_closure_method(obj, method, args, function);
+            }
+        }
+
         // Built-in method: float.sqrt()
         if method == "sqrt" {
             let obj = self.compile_expr(object, function)?;
@@ -1693,6 +1703,340 @@ impl<'ctx> Codegen<'ctx> {
         // Store it in a variable so it can be loaded as a ptr later.
         let _ = parent_fn; // suppress warning
         Ok(closure_fn.as_global_value().as_pointer_value().into())
+    }
+
+    fn compile_array_closure_method(
+        &mut self,
+        arr: BasicValueEnum<'ctx>,
+        method: &str,
+        args: &[HirExpr],
+        function: FunctionValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let i64_type = self.context.i64_type();
+        let arr_type = self.array_type();
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+
+        // Extract data ptr and len from source array
+        let src_alloca = self.builder.build_alloca(arr_type, "src_arr").unwrap();
+        self.builder.build_store(src_alloca, arr).unwrap();
+        let data_gep = self
+            .builder
+            .build_struct_gep(arr_type, src_alloca, 0, "data_gep")
+            .unwrap();
+        let data_ptr = self
+            .builder
+            .build_load(ptr_type, data_gep, "data")
+            .unwrap()
+            .into_pointer_value();
+        let len_gep = self
+            .builder
+            .build_struct_gep(arr_type, src_alloca, 1, "len_gep")
+            .unwrap();
+        let len = self
+            .builder
+            .build_load(i64_type, len_gep, "len")
+            .unwrap()
+            .into_int_value();
+
+        // Compile the closure argument
+        let closure_arg_idx = if method == "fold" { 1 } else { 0 };
+        let closure_val = self.compile_expr(&args[closure_arg_idx], function)?;
+        let closure_ptr = closure_val.into_pointer_value();
+
+        match method {
+            "map" => {
+                // Build new array, call closure for each element
+                let push_fn = self.get_or_declare_array_push();
+                let result = self.builder.build_alloca(arr_type, "map_result").unwrap();
+                // Start with empty array
+                let empty_data = ptr_type.const_null();
+                let zero = i64_type.const_int(0, false);
+                let data_field = self
+                    .builder
+                    .build_struct_gep(arr_type, result, 0, "rd")
+                    .unwrap();
+                self.builder.build_store(data_field, empty_data).unwrap();
+                let len_field = self
+                    .builder
+                    .build_struct_gep(arr_type, result, 1, "rl")
+                    .unwrap();
+                self.builder.build_store(len_field, zero).unwrap();
+
+                // Loop
+                let idx = self.builder.build_alloca(i64_type, "idx").unwrap();
+                self.builder.build_store(idx, zero).unwrap();
+                let cond_bb = self.context.append_basic_block(function, "map_cond");
+                let body_bb = self.context.append_basic_block(function, "map_body");
+                let exit_bb = self.context.append_basic_block(function, "map_exit");
+                self.builder.build_unconditional_branch(cond_bb).unwrap();
+
+                self.builder.position_at_end(cond_bb);
+                let cur = self
+                    .builder
+                    .build_load(i64_type, idx, "i")
+                    .unwrap()
+                    .into_int_value();
+                let cond = self
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, cur, len, "cmp")
+                    .unwrap();
+                self.builder
+                    .build_conditional_branch(cond, body_bb, exit_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(body_bb);
+                let elem_ptr = unsafe {
+                    self.builder
+                        .build_gep(i64_type, data_ptr, &[cur], "ep")
+                        .unwrap()
+                };
+                let elem = self.builder.build_load(i64_type, elem_ptr, "elem").unwrap();
+                // Call closure(elem)
+                let fn_type = i64_type.fn_type(&[i64_type.into()], false);
+                let mapped = self
+                    .builder
+                    .build_indirect_call(fn_type, closure_ptr, &[elem.into()], "mapped")
+                    .unwrap();
+                let mapped_val = match mapped.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => i64_type.const_int(0, false).into(),
+                };
+                // Push to result
+                let cur_arr = self
+                    .builder
+                    .build_load(arr_type, result, "cur_arr")
+                    .unwrap();
+                let new_arr = self
+                    .builder
+                    .build_call(push_fn, &[cur_arr.into(), mapped_val.into()], "pushed")
+                    .unwrap();
+                let new_arr_val = match new_arr.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => arr_type.const_zero().into(),
+                };
+                self.builder.build_store(result, new_arr_val).unwrap();
+                // Increment
+                let next = self
+                    .builder
+                    .build_int_add(cur, i64_type.const_int(1, false), "next")
+                    .unwrap();
+                self.builder.build_store(idx, next).unwrap();
+                self.builder.build_unconditional_branch(cond_bb).unwrap();
+
+                self.builder.position_at_end(exit_bb);
+                Ok(self
+                    .builder
+                    .build_load(arr_type, result, "map_out")
+                    .unwrap())
+            }
+            "filter" => {
+                let push_fn = self.get_or_declare_array_push();
+                let result = self.builder.build_alloca(arr_type, "filt_result").unwrap();
+                let empty_data = ptr_type.const_null();
+                let zero = i64_type.const_int(0, false);
+                let data_field = self
+                    .builder
+                    .build_struct_gep(arr_type, result, 0, "rd")
+                    .unwrap();
+                self.builder.build_store(data_field, empty_data).unwrap();
+                let len_field = self
+                    .builder
+                    .build_struct_gep(arr_type, result, 1, "rl")
+                    .unwrap();
+                self.builder.build_store(len_field, zero).unwrap();
+
+                let idx = self.builder.build_alloca(i64_type, "idx").unwrap();
+                self.builder.build_store(idx, zero).unwrap();
+                let cond_bb = self.context.append_basic_block(function, "filt_cond");
+                let body_bb = self.context.append_basic_block(function, "filt_body");
+                let exit_bb = self.context.append_basic_block(function, "filt_exit");
+                self.builder.build_unconditional_branch(cond_bb).unwrap();
+
+                self.builder.position_at_end(cond_bb);
+                let cur = self
+                    .builder
+                    .build_load(i64_type, idx, "i")
+                    .unwrap()
+                    .into_int_value();
+                let cond = self
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, cur, len, "cmp")
+                    .unwrap();
+                self.builder
+                    .build_conditional_branch(cond, body_bb, exit_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(body_bb);
+                let elem_ptr = unsafe {
+                    self.builder
+                        .build_gep(i64_type, data_ptr, &[cur], "ep")
+                        .unwrap()
+                };
+                let elem = self.builder.build_load(i64_type, elem_ptr, "elem").unwrap();
+                // Call closure(elem) — returns bool (i1 or i64)
+                let fn_type = i64_type.fn_type(&[i64_type.into()], false);
+                let keep = self
+                    .builder
+                    .build_indirect_call(fn_type, closure_ptr, &[elem.into()], "keep")
+                    .unwrap();
+                let keep_val = match keep.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v.into_int_value(),
+                    _ => i64_type.const_int(0, false),
+                };
+                // If truthy, push
+                let push_bb = self.context.append_basic_block(function, "filt_push");
+                let skip_bb = self.context.append_basic_block(function, "filt_skip");
+                let is_true = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        keep_val,
+                        i64_type.const_int(0, false),
+                        "truthy",
+                    )
+                    .unwrap();
+                self.builder
+                    .build_conditional_branch(is_true, push_bb, skip_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(push_bb);
+                let cur_arr = self
+                    .builder
+                    .build_load(arr_type, result, "cur_arr")
+                    .unwrap();
+                let new_arr = self
+                    .builder
+                    .build_call(push_fn, &[cur_arr.into(), elem.into()], "pushed")
+                    .unwrap();
+                let new_arr_val = match new_arr.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => arr_type.const_zero().into(),
+                };
+                self.builder.build_store(result, new_arr_val).unwrap();
+                self.builder.build_unconditional_branch(skip_bb).unwrap();
+
+                self.builder.position_at_end(skip_bb);
+                let next = self
+                    .builder
+                    .build_int_add(cur, i64_type.const_int(1, false), "next")
+                    .unwrap();
+                self.builder.build_store(idx, next).unwrap();
+                self.builder.build_unconditional_branch(cond_bb).unwrap();
+
+                self.builder.position_at_end(exit_bb);
+                Ok(self
+                    .builder
+                    .build_load(arr_type, result, "filt_out")
+                    .unwrap())
+            }
+            "fold" => {
+                // fold(init, |acc, x| body)
+                let init = self.compile_expr(&args[0], function)?;
+                let acc = self.builder.build_alloca(i64_type, "acc").unwrap();
+                self.builder.build_store(acc, init).unwrap();
+
+                let idx = self.builder.build_alloca(i64_type, "idx").unwrap();
+                let zero = i64_type.const_int(0, false);
+                self.builder.build_store(idx, zero).unwrap();
+                let cond_bb = self.context.append_basic_block(function, "fold_cond");
+                let body_bb = self.context.append_basic_block(function, "fold_body");
+                let exit_bb = self.context.append_basic_block(function, "fold_exit");
+                self.builder.build_unconditional_branch(cond_bb).unwrap();
+
+                self.builder.position_at_end(cond_bb);
+                let cur = self
+                    .builder
+                    .build_load(i64_type, idx, "i")
+                    .unwrap()
+                    .into_int_value();
+                let cond = self
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, cur, len, "cmp")
+                    .unwrap();
+                self.builder
+                    .build_conditional_branch(cond, body_bb, exit_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(body_bb);
+                let elem_ptr = unsafe {
+                    self.builder
+                        .build_gep(i64_type, data_ptr, &[cur], "ep")
+                        .unwrap()
+                };
+                let elem = self.builder.build_load(i64_type, elem_ptr, "elem").unwrap();
+                let cur_acc = self.builder.build_load(i64_type, acc, "cur_acc").unwrap();
+                // Call closure(acc, elem)
+                let fn_type = i64_type.fn_type(&[i64_type.into(), i64_type.into()], false);
+                let new_acc = self
+                    .builder
+                    .build_indirect_call(
+                        fn_type,
+                        closure_ptr,
+                        &[cur_acc.into(), elem.into()],
+                        "new_acc",
+                    )
+                    .unwrap();
+                let new_acc_val = match new_acc.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => i64_type.const_int(0, false).into(),
+                };
+                self.builder.build_store(acc, new_acc_val).unwrap();
+                let next = self
+                    .builder
+                    .build_int_add(cur, i64_type.const_int(1, false), "next")
+                    .unwrap();
+                self.builder.build_store(idx, next).unwrap();
+                self.builder.build_unconditional_branch(cond_bb).unwrap();
+
+                self.builder.position_at_end(exit_bb);
+                Ok(self.builder.build_load(i64_type, acc, "fold_out").unwrap())
+            }
+            "each" => {
+                let idx = self.builder.build_alloca(i64_type, "idx").unwrap();
+                let zero = i64_type.const_int(0, false);
+                self.builder.build_store(idx, zero).unwrap();
+                let cond_bb = self.context.append_basic_block(function, "each_cond");
+                let body_bb = self.context.append_basic_block(function, "each_body");
+                let exit_bb = self.context.append_basic_block(function, "each_exit");
+                self.builder.build_unconditional_branch(cond_bb).unwrap();
+
+                self.builder.position_at_end(cond_bb);
+                let cur = self
+                    .builder
+                    .build_load(i64_type, idx, "i")
+                    .unwrap()
+                    .into_int_value();
+                let cond = self
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, cur, len, "cmp")
+                    .unwrap();
+                self.builder
+                    .build_conditional_branch(cond, body_bb, exit_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(body_bb);
+                let elem_ptr = unsafe {
+                    self.builder
+                        .build_gep(i64_type, data_ptr, &[cur], "ep")
+                        .unwrap()
+                };
+                let elem = self.builder.build_load(i64_type, elem_ptr, "elem").unwrap();
+                let fn_type = i64_type.fn_type(&[i64_type.into()], false);
+                self.builder
+                    .build_indirect_call(fn_type, closure_ptr, &[elem.into()], "")
+                    .unwrap();
+                let next = self
+                    .builder
+                    .build_int_add(cur, i64_type.const_int(1, false), "next")
+                    .unwrap();
+                self.builder.build_store(idx, next).unwrap();
+                self.builder.build_unconditional_branch(cond_bb).unwrap();
+
+                self.builder.position_at_end(exit_bb);
+                Ok(i64_type.const_int(0, false).into())
+            }
+            _ => Err(CodegenError(format!("Unknown array method: {method}"))),
+        }
     }
 
     fn compile_for(
