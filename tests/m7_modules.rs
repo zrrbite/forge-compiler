@@ -1,6 +1,5 @@
 //! M7: Module system tests.
 
-use forge::ast::Program;
 use forge::interpreter::Interpreter;
 use forge::lexer::Lexer;
 use forge::parser::Parser;
