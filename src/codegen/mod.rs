@@ -78,6 +78,7 @@ impl<'ctx> Codegen<'ctx> {
             printf_fn,
         };
         codegen.emit_string_runtime();
+        codegen.emit_array_runtime();
         codegen
     }
 
@@ -259,6 +260,92 @@ impl<'ctx> Codegen<'ctx> {
 
     pub fn get_ir(&self) -> String {
         self.module.print_to_string().to_string()
+    }
+
+    /// Emit forge_array_push as LLVM IR: takes {ptr, i64} + i64, returns {ptr, i64}
+    fn emit_array_runtime(&mut self) {
+        let arr_type = self.array_type();
+        let i64_type = self.context.i64_type();
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+
+        let realloc_ty = ptr_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
+        let realloc_fn = self
+            .module
+            .get_function("realloc")
+            .unwrap_or_else(|| self.module.add_function("realloc", realloc_ty, None));
+
+        // forge_array_push(arr: {ptr, i64}, val: i64) -> {ptr, i64}
+        let push_ty = arr_type.fn_type(&[arr_type.into(), i64_type.into()], false);
+        let push_fn = self
+            .module
+            .get_function("forge_array_push")
+            .unwrap_or_else(|| self.module.add_function("forge_array_push", push_ty, None));
+
+        let entry = self.context.append_basic_block(push_fn, "entry");
+        self.builder.position_at_end(entry);
+
+        let arr_param = push_fn.get_nth_param(0).unwrap().into_struct_value();
+        let val_param = push_fn.get_nth_param(1).unwrap().into_int_value();
+
+        // Extract data ptr and len
+        let data = self
+            .builder
+            .build_extract_value(arr_param, 0, "data")
+            .unwrap()
+            .into_pointer_value();
+        let len = self
+            .builder
+            .build_extract_value(arr_param, 1, "len")
+            .unwrap()
+            .into_int_value();
+
+        // new_len = len + 1
+        let one = i64_type.const_int(1, false);
+        let new_len = self.builder.build_int_add(len, one, "new_len").unwrap();
+
+        // new_size = new_len * 8
+        let eight = i64_type.const_int(8, false);
+        let new_size = self
+            .builder
+            .build_int_mul(new_len, eight, "new_size")
+            .unwrap();
+
+        // new_data = realloc(data, new_size)
+        let new_data = match self
+            .builder
+            .build_call(realloc_fn, &[data.into(), new_size.into()], "new_data")
+            .unwrap()
+            .try_as_basic_value()
+        {
+            inkwell::values::ValueKind::Basic(v) => v.into_pointer_value(),
+            _ => ptr_type.const_null(),
+        };
+
+        // new_data[len] = val
+        let elem_ptr = unsafe {
+            self.builder
+                .build_gep(i64_type, new_data, &[len], "elem_ptr")
+                .unwrap()
+        };
+        self.builder.build_store(elem_ptr, val_param).unwrap();
+
+        // Build result struct { new_data, new_len }
+        let result_alloca = self.builder.build_alloca(arr_type, "result").unwrap();
+        let data_field = self
+            .builder
+            .build_struct_gep(arr_type, result_alloca, 0, "res_data")
+            .unwrap();
+        self.builder.build_store(data_field, new_data).unwrap();
+        let len_field = self
+            .builder
+            .build_struct_gep(arr_type, result_alloca, 1, "res_len")
+            .unwrap();
+        self.builder.build_store(len_field, new_len).unwrap();
+        let result = self
+            .builder
+            .build_load(arr_type, result_alloca, "result_val")
+            .unwrap();
+        self.builder.build_return(Some(&result)).unwrap();
     }
 
     /// Returns the LLVM struct type for Forge arrays: { ptr, i64 } (data, len).
@@ -1075,6 +1162,23 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
 
+        // Built-in method: array.push(val) — returns new array with element appended
+        if method == "push" && !args.is_empty() {
+            let obj = self.compile_expr(object, function)?;
+            if obj.get_type() == self.array_type().into() {
+                let val = self.compile_expr(&args[0], function)?;
+                let push_fn = self.get_or_declare_array_push();
+                let result = self
+                    .builder
+                    .build_call(push_fn, &[obj.into(), val.into()], "pushed")
+                    .unwrap();
+                return match result.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => Ok(v),
+                    _ => Ok(self.array_type().const_zero().into()),
+                };
+            }
+        }
+
         // Built-in method: float.sqrt()
         if method == "sqrt" {
             let obj = self.compile_expr(object, function)?;
@@ -1424,6 +1528,16 @@ impl<'ctx> Codegen<'ctx> {
         })
     }
 
+    fn get_or_declare_array_push(&self) -> FunctionValue<'ctx> {
+        let name = "forge_array_push";
+        self.module.get_function(name).unwrap_or_else(|| {
+            let arr_type = self.array_type();
+            let fn_type =
+                arr_type.fn_type(&[arr_type.into(), self.context.i64_type().into()], false);
+            self.module.add_function(name, fn_type, None)
+        })
+    }
+
     // ── Control flow ────────────────────────────────────────────────────
 
     fn compile_if(
@@ -1658,7 +1772,107 @@ impl<'ctx> Codegen<'ctx> {
             return Ok(self.context.i64_type().const_int(0, false).into());
         }
 
-        // Fallback: just compile the body once (not ideal but doesn't crash).
+        // Array iteration: for x in arr { ... }
+        let iter_val = self.compile_expr(iter, function)?;
+        if iter_val.get_type() == self.array_type().into() {
+            let i64_type = self.context.i64_type();
+            let arr_type = self.array_type();
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+
+            // Store the array struct
+            let arr_alloca = self.builder.build_alloca(arr_type, "iter_arr").unwrap();
+            self.builder.build_store(arr_alloca, iter_val).unwrap();
+
+            // Get data ptr and len
+            let data_gep = self
+                .builder
+                .build_struct_gep(arr_type, arr_alloca, 0, "data_gep")
+                .unwrap();
+            let data_ptr = self
+                .builder
+                .build_load(ptr_type, data_gep, "data")
+                .unwrap()
+                .into_pointer_value();
+            let len_gep = self
+                .builder
+                .build_struct_gep(arr_type, arr_alloca, 1, "len_gep")
+                .unwrap();
+            let len = self
+                .builder
+                .build_load(i64_type, len_gep, "len")
+                .unwrap()
+                .into_int_value();
+
+            // Index counter
+            let idx = self.create_alloca("__idx", i64_type.into(), function);
+            self.builder
+                .build_store(idx, i64_type.const_int(0, false))
+                .unwrap();
+
+            let cond_bb = self.context.append_basic_block(function, "for_cond");
+            let body_bb = self.context.append_basic_block(function, "for_body");
+            let exit_bb = self.context.append_basic_block(function, "for_exit");
+
+            self.builder.build_unconditional_branch(cond_bb).unwrap();
+
+            // Condition: __idx < len
+            self.builder.position_at_end(cond_bb);
+            let cur_idx = self
+                .builder
+                .build_load(i64_type, idx, "cur_idx")
+                .unwrap()
+                .into_int_value();
+            let cond = self
+                .builder
+                .build_int_compare(IntPredicate::SLT, cur_idx, len, "arr_cond")
+                .unwrap();
+            self.builder
+                .build_conditional_branch(cond, body_bb, exit_bb)
+                .unwrap();
+
+            // Body: binding = data[__idx]
+            self.builder.position_at_end(body_bb);
+            self.push_scope();
+
+            let elem_ptr = unsafe {
+                self.builder
+                    .build_gep(i64_type, data_ptr, &[cur_idx], "elem_ptr")
+                    .unwrap()
+            };
+            let elem = self.builder.build_load(i64_type, elem_ptr, "elem").unwrap();
+            let binding_alloca = self.create_alloca(binding, i64_type.into(), function);
+            self.builder.build_store(binding_alloca, elem).unwrap();
+            self.define_var(binding.to_string(), binding_alloca, i64_type.into());
+
+            self.compile_block(body, function)?;
+            self.pop_scope();
+
+            // Increment index
+            let next_idx = self
+                .builder
+                .build_load(i64_type, idx, "next_idx")
+                .unwrap()
+                .into_int_value();
+            let inc = self
+                .builder
+                .build_int_add(next_idx, i64_type.const_int(1, false), "inc")
+                .unwrap();
+            self.builder.build_store(idx, inc).unwrap();
+            if self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_terminator()
+                .is_none()
+            {
+                self.builder.build_unconditional_branch(cond_bb).unwrap();
+            }
+
+            self.builder.position_at_end(exit_bb);
+            return Ok(i64_type.const_int(0, false).into());
+        }
+
+        // Fallback
         Ok(self.context.i64_type().const_int(0, false).into())
     }
 
