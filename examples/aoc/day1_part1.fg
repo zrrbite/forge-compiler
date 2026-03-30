@@ -1,0 +1,22 @@
+// AoC Day 1 Part 1: Dial rotation — count times dial points at 0
+let lines = File.read_lines("/home/zrrbite/dev/claude-codes-aoc/1/part1/input.txt").unwrap()
+
+let mut pos = 50
+let mut count = 0
+
+for line in lines {
+    if line.len() == 0 { continue }
+    let dir = line[0:1]
+    let amount = to_int(line[1:])
+    if dir == "L" {
+        pos = (pos - amount) % 100
+        if pos < 0 { pos = pos + 100 }
+    } else {
+        pos = (pos + amount) % 100
+    }
+    if pos == 0 {
+        count = count + 1
+    }
+}
+
+print(count)

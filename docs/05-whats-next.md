@@ -1,23 +1,24 @@
 # What's Next
 
-## Current pipeline
+## Current Pipeline
 
 ```
 Source (.fg)
-  → Module resolver (use declarations)      ✅ done
-  → Lexer      → Tokens                     ✅ done
-  → Parser     → AST                        ✅ done
-  → Interpreter (tree-walk)                  ✅ done
-  → Lowering   → HIR (desugared)            ✅ done
-  → Type Check                              ✅ done
-  → Borrow Check                            ✅ done
-  → Comptime evaluation                     ✅ done
-  → Codegen    → LLVM IR → Native binary    ✅ done (structs, methods, loops)
+  → Module resolver (use declarations)      ✅
+  → Lexer      → Tokens                     ✅
+  → Parser     → AST                        ✅
+  → Interpreter (tree-walk)                  ✅
+  → Lowering   → HIR (desugared)            ✅
+  → Type Check                              ✅
+  → Borrow Check                            ✅
+  → Comptime evaluation                     ✅
+  → Codegen    → LLVM IR → Native binary    ✅
+  → Self-hosted compiler (Forge → C → cc)   ✅
 ```
 
-## Self-hosting roadmap
+## Completed Milestones
 
-The goal is to rewrite the Forge compiler in Forge itself. Progress:
+All core milestones are complete as of v0.7.0:
 
 | Milestone | Description | Status |
 |-----------|-------------|--------|
@@ -28,14 +29,16 @@ The goal is to rewrite the Forge compiler in Forge itself. Progress:
 | M5 | HashMap / dictionary type | ✅ |
 | M6 | File I/O (File.read, File.write, args, exit) | ✅ |
 | M7 | Module system (use declarations, multi-file) | ✅ |
-| M8 | Enum variants in LLVM codegen | Queued |
-| M9 | Recursive types and Box\<T\> | Queued |
-| M10 | Trait dispatch and conformance checking | Queued |
-| M11 | Multi-line closures and closure codegen | Queued |
-| M12 | Integration: mini-lexer written in Forge | Queued |
-| #1 | **Self-hosting: rewrite compiler in Forge** | **The finale** |
+| M8 | Closures, operators, traits | ✅ |
+| M9 | Arrays in LLVM codegen | ✅ |
+| M10 | Trait dispatch (struct name tracking) | ✅ |
+| M11 | Closure codegen (function pointers) | ✅ |
+| M12 | Integration: mini-lexer written in Forge | ✅ |
+| Self-hosting | Forge compiler written in Forge (11/11 samples) | ✅ |
 
-## Test coverage
+## Test Coverage
+
+319 tests across all phases:
 
 | Phase | Tests |
 |-------|-------|
@@ -56,4 +59,16 @@ The goal is to rewrite the Forge compiler in Forge itself. Progress:
 | M5: HashMap | 8 |
 | M6: File I/O | 5 |
 | M7: Modules | 6 |
-| **Total** | **292** |
+| M8-M11: Closures, Operators, Traits | 12 |
+| Mut Self / Mut Ref | 12 |
+| Integration | 4 |
+| **Total** | **319** |
+
+## Future Work
+
+- **Escaped closures**: heap-allocated environment for closures returned from functions
+- **NLL borrow checker**: non-lexical lifetimes for more flexible borrowing
+- **Package manager**: dependency management and project configuration
+- **LSP server**: IDE integration beyond syntax highlighting
+- **WebAssembly target**: compile to wasm for browser/edge use
+- **Optimization**: tail call elimination, constant folding before LLVM

@@ -30,8 +30,12 @@ No semicolons. Implicit returns. String interpolation. Ownership without the cer
 - **comptime** — compile-time evaluation using the same language (no macros)
 - **Result/Option** — `Ok`, `Err`, `Some`, `None` with `?` propagation
 - **Closures** — `|x| x * 2` with environment capture
-- **Built-in methods** — arrays have `map`, `filter`, `fold`, `push`, `pop`
+- **Safe navigation** — `map.get("key")?.to_upper()` and `value ?? default`
+- **defer** — Go-style cleanup: `defer close(file)`
+- **Slice syntax** — `arr[1:3]`, `str[0:5]` (Go/Python-style)
+- **Built-in methods** — arrays have `map`, `filter`, `fold`, `sort`, `min`, `max`, `sum`
 - **Module system** — `use math` imports from `math.fg`
+- **REPL** — interactive prompt with persistent state
 - **Compiles to native** — LLVM backend produces native binaries
 
 ## Quick Start

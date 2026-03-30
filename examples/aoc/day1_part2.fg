@@ -1,0 +1,53 @@
+// AoC Day 1 Part 2: Count every click that lands on 0
+// Use math: count how many times 0 is crossed during a rotation
+
+let lines = File.read_lines("/home/zrrbite/dev/claude-codes-aoc/1/part1/input.txt").unwrap()
+
+let mut pos = 50
+let mut count = 0
+
+for line in lines {
+    if line.len() == 0 { continue }
+    let dir = line[0:1]
+    let amount = to_int(line[1:])
+
+    if dir == "L" {
+        // Moving left (decreasing). From pos, we go through pos-1, pos-2, ...
+        // We cross 0 when we pass through it.
+        // New pos after full rotation:
+        let new_pos = ((pos - amount) % 100 + 100) % 100
+        // Count full wraps: amount / 100 full circles
+        let full_wraps = amount / 100
+        count = count + full_wraps
+        // Check if 0 is in the partial range [new_pos+1..pos] going left
+        // Equivalently: going from pos down by (amount % 100) steps
+        let partial = amount % 100
+        if partial > 0 {
+            // We go from pos down to pos-partial (mod 100)
+            // 0 is crossed if pos >= 0 and new_pos_partial < 0 (wrapped)
+            // i.e., if pos < partial (we cross 0)
+            if pos < partial {
+                count = count + 1
+            }
+            // Special case: if pos == 0, the first click away doesn't count
+            // but a full wrap back to 0 does
+        }
+        pos = new_pos
+    } else {
+        // Moving right (increasing)
+        let new_pos = (pos + amount) % 100
+        let full_wraps = amount / 100
+        count = count + full_wraps
+        let partial = amount % 100
+        if partial > 0 {
+            // Going from pos up to pos+partial (mod 100)
+            // 0 is crossed if pos+partial >= 100
+            if pos + partial >= 100 {
+                count = count + 1
+            }
+        }
+        pos = new_pos
+    }
+}
+
+print(count)
