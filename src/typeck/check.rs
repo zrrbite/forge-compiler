@@ -316,6 +316,9 @@ impl TypeChecker {
                 HirStmtKind::Break | HirStmtKind::Continue => {
                     last_ty = Ty::Unit;
                 }
+                HirStmtKind::Defer(expr) => {
+                    self.check_expr(expr);
+                }
             }
         }
 

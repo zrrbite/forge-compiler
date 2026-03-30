@@ -359,6 +359,9 @@ impl BorrowChecker {
                 }
             }
             HirStmtKind::Break | HirStmtKind::Continue => {}
+            HirStmtKind::Defer(expr) => {
+                self.check_expr(expr);
+            }
         }
     }
 

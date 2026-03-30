@@ -141,6 +141,8 @@ pub enum StmtKind {
     Return(Option<Expr>),
     Break,
     Continue,
+    /// Defer: `defer expr` — execute when scope exits
+    Defer(Expr),
 }
 
 /// An expression.

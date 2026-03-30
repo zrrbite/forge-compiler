@@ -436,37 +436,57 @@ impl Interpreter {
 
     fn eval_block_inner(&mut self, block: &Block) -> Outcome {
         let mut last = Value::Unit;
-        for (i, stmt) in block.stmts.iter().enumerate() {
-            let is_last = i == block.stmts.len() - 1;
-            match &stmt.kind {
-                StmtKind::Let { name, value, .. } => {
-                    let val = match value {
-                        Some(expr) => try_val!(self.eval_expr(expr)),
-                        None => Value::Unit,
-                    };
-                    self.env.define(name.clone(), val);
-                    last = Value::Unit;
-                }
-                StmtKind::Return(expr) => {
-                    let val = match expr {
-                        Some(e) => try_val!(self.eval_expr(e)),
-                        None => Value::Unit,
-                    };
-                    return Outcome::Return(val);
-                }
-                StmtKind::Break => return Outcome::Break,
-                StmtKind::Continue => return Outcome::Continue,
-                StmtKind::Expr(expr) => match self.eval_expr(expr) {
-                    Outcome::Val(v) => {
-                        if is_last {
-                            last = v;
-                        }
+        let mut deferred: Vec<&Expr> = Vec::new();
+
+        let result = 'block: {
+            for (i, stmt) in block.stmts.iter().enumerate() {
+                let is_last = i == block.stmts.len() - 1;
+                match &stmt.kind {
+                    StmtKind::Let { name, value, .. } => {
+                        let val = match value {
+                            Some(expr) => match self.eval_expr(expr) {
+                                Outcome::Val(v) => v,
+                                other => break 'block other,
+                            },
+                            None => Value::Unit,
+                        };
+                        self.env.define(name.clone(), val);
+                        last = Value::Unit;
                     }
-                    other => return other,
-                },
+                    StmtKind::Return(expr) => {
+                        let val = match expr {
+                            Some(e) => match self.eval_expr(e) {
+                                Outcome::Val(v) => v,
+                                other => break 'block other,
+                            },
+                            None => Value::Unit,
+                        };
+                        break 'block Outcome::Return(val);
+                    }
+                    StmtKind::Break => break 'block Outcome::Break,
+                    StmtKind::Continue => break 'block Outcome::Continue,
+                    StmtKind::Defer(expr) => {
+                        deferred.push(expr);
+                    }
+                    StmtKind::Expr(expr) => match self.eval_expr(expr) {
+                        Outcome::Val(v) => {
+                            if is_last {
+                                last = v;
+                            }
+                        }
+                        other => break 'block other,
+                    },
+                }
             }
+            Outcome::Val(last)
+        };
+
+        // Execute deferred expressions in LIFO order.
+        for expr in deferred.iter().rev() {
+            let _ = self.eval_expr(expr);
         }
-        Outcome::Val(last)
+
+        result
     }
 
     // ── Expression evaluation ───────────────────────────────────────────
