@@ -394,6 +394,29 @@ across Forge, Rust, C++, Zig, and Go.
 - [Comptime](docs/08-comptime.md) — compile-time evaluation
 - [Self-Hosting](docs/11-self-hosting.md) — the Forge compiler written in Forge
 
+### Editor Support
+
+- [Neovim/Vim](editors/nvim/) — syntax highlighting (symlink ftdetect + syntax)
+- [VS Code](editors/vscode/) — syntax highlighting (install via vsix)
+- [Language Server](editors/lsp/) — real-time diagnostics in Neovim
+
+```bash
+# Build the LSP server
+cargo build --release --bin forge-lsp
+
+# Neovim config (~/.config/nvim/init.lua)
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "forge",
+  callback = function()
+    vim.lsp.start({
+      name = "forge-lsp",
+      cmd = { "/path/to/target/release/forge-lsp" },
+      root_dir = vim.fn.getcwd(),
+    })
+  end,
+})
+```
+
 ### Contributing
 
 - [Developer Guide](docs/DEVELOPERS.md) — architecture, build system, testing, how to contribute
@@ -404,7 +427,7 @@ across Forge, Rust, C++, Zig, and Go.
 ```bash
 git clone https://github.com/zrrbite/forge-compiler.git
 cd forge-compiler
-cargo build --release       # build
+cargo build --release       # build compiler + LSP
 cargo test                  # run 319 tests
 cargo run -- hello.fg       # run a program
 ```
