@@ -324,7 +324,14 @@ impl Interpreter {
         );
         // Process/IO builtins.
         for name in [
-            "args", "exit", "exec", "input", "env_get", "env_set", "env_vars",
+            "args",
+            "exit",
+            "exec",
+            "input",
+            "stdin_lines",
+            "env_get",
+            "env_set",
+            "env_vars",
         ] {
             self.env
                 .define(name.into(), Value::Function(FnValue::Builtin(name.into())));
@@ -1219,6 +1226,48 @@ impl Interpreter {
                     s.len() == 1 && s.chars().next().unwrap().is_ascii_digit(),
                 ));
             }
+            (Value::String(s), "lines") => {
+                let parts: Vec<Value> = s.lines().map(|l| Value::String(l.to_string())).collect();
+                return Outcome::Val(Value::Array(parts));
+            }
+            (Value::String(s), "chars") => {
+                let chars: Vec<Value> = s.chars().map(|c| Value::String(c.to_string())).collect();
+                return Outcome::Val(Value::Array(chars));
+            }
+            (Value::String(s), "repeat") => {
+                if args.len() != 1 {
+                    return Outcome::Error("repeat requires 1 argument".into());
+                }
+                let n = try_val!(self.eval_expr(&args[0]));
+                if let Value::Int(n) = n {
+                    return Outcome::Val(Value::String(s.repeat(n as usize)));
+                }
+                return Outcome::Error("repeat: argument must be an integer".into());
+            }
+            (Value::String(s), "parse_int") => {
+                return match s.trim().parse::<i128>() {
+                    Ok(n) => Outcome::Val(Value::Variant {
+                        name: "Ok".into(),
+                        fields: vec![Value::Int(n)],
+                    }),
+                    Err(_) => Outcome::Val(Value::Variant {
+                        name: "Err".into(),
+                        fields: vec![Value::String(format!("cannot parse '{s}' as int"))],
+                    }),
+                };
+            }
+            (Value::String(s), "parse_float") => {
+                return match s.trim().parse::<f64>() {
+                    Ok(f) => Outcome::Val(Value::Variant {
+                        name: "Ok".into(),
+                        fields: vec![Value::Float(f)],
+                    }),
+                    Err(_) => Outcome::Val(Value::Variant {
+                        name: "Err".into(),
+                        fields: vec![Value::String(format!("cannot parse '{s}' as float"))],
+                    }),
+                };
+            }
             (Value::String(s), "is_alpha") => {
                 return Outcome::Val(Value::Bool(
                     s.len() == 1 && s.chars().next().unwrap().is_alphabetic(),
@@ -1308,6 +1357,33 @@ impl Interpreter {
                     }
                 }
                 return Outcome::Error("File.read: path must be a string".into());
+            }
+            (Value::Variant { name: vname, .. }, "read_lines") if vname == "File" => {
+                if args.len() != 1 {
+                    return Outcome::Error("File.read_lines requires 1 argument".into());
+                }
+                let path = try_val!(self.eval_expr(&args[0]));
+                if let Value::String(path) = path {
+                    match std::fs::read_to_string(&path) {
+                        Ok(content) => {
+                            let lines: Vec<Value> = content
+                                .lines()
+                                .map(|l| Value::String(l.to_string()))
+                                .collect();
+                            return Outcome::Val(Value::Variant {
+                                name: "Ok".into(),
+                                fields: vec![Value::Array(lines)],
+                            });
+                        }
+                        Err(e) => {
+                            return Outcome::Val(Value::Variant {
+                                name: "Err".into(),
+                                fields: vec![Value::String(e.to_string())],
+                            });
+                        }
+                    }
+                }
+                return Outcome::Error("File.read_lines: path must be a string".into());
             }
             (Value::Variant { name: vname, .. }, "write") if vname == "File" => {
                 if args.len() != 2 {
@@ -1673,6 +1749,19 @@ impl Interpreter {
                     }
                     Err(e) => Outcome::Error(format!("input error: {e}")),
                 }
+            }
+            "stdin_lines" => {
+                // stdin_lines() -> [str] — read all lines from stdin
+                use std::io::BufRead;
+                let mut lines = Vec::new();
+                let stdin = std::io::stdin();
+                for line in stdin.lock().lines() {
+                    match line {
+                        Ok(l) => lines.push(Value::String(l)),
+                        Err(_) => break,
+                    }
+                }
+                Outcome::Val(Value::Array(lines))
             }
             "env_get" => {
                 // env_get(key) -> str (empty string if not set)
