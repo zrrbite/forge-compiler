@@ -593,6 +593,23 @@ fn gen_expr(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
         } else {
             g = g.emit(expr.value)
         }
+    } else if expr.kind == "binop" && expr.value == ".." {
+        // Range as value — build a ForgeArray of int64_t
+        g = g.emit("(\{\n")
+        g.indent = g.indent + 1
+        g = g.emit_indent()
+        g = g.emit("ForgeArray _rng = forge_array_new(sizeof(int64_t));\n")
+        g = g.emit_indent()
+        g = g.emit("for (int64_t _ri = ")
+        g = gen_expr(g, expr.left[0], type_map)
+        g = g.emit("; _ri < ")
+        g = gen_expr(g, expr.right[0], type_map)
+        g = g.emit("; _ri++) _rng = forge_array_push(_rng, &_ri);\n")
+        g = g.emit_indent()
+        g = g.emit("_rng;\n")
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\})")
     } else if expr.kind == "binop" {
         // Check for operator overloading on struct types
         let lhs_type = infer_expr_type(expr.left[0], type_map)
@@ -620,7 +637,7 @@ fn gen_expr(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
             g = g.emit(", ")
             g = gen_expr(g, expr.right[0], type_map)
             g = g.emit(")")
-        } else if (resolved_type == "const char*" || resolved_type == "") && (expr.value == "==" || expr.value == "!=") {
+        } else if (expr.value == "==" || expr.value == "!=") && (resolved_type == "const char*" || infer_expr_type(expr.right[0], type_map) == "const char*") {
             // String comparison: use strcmp
             let right_type = infer_expr_type(expr.right[0], type_map)
             if resolved_type == "const char*" || right_type == "const char*" {
@@ -642,6 +659,7 @@ fn gen_expr(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
                 g = gen_expr(g, expr.left[0], type_map)
                 g = g.emit(" {expr.value} ")
                 g = gen_expr(g, expr.right[0], type_map)
+                g = g.emit(")")
             }
         } else if resolved_type == "const char*" && expr.value == "+" {
             // String concatenation
@@ -649,6 +667,7 @@ fn gen_expr(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
             g = gen_expr(g, expr.left[0], type_map)
             g = g.emit(", ")
             g = gen_expr(g, expr.right[0], type_map)
+            g = g.emit(")")
         } else {
             g = g.emit("(")
             g = gen_expr(g, expr.left[0], type_map)
@@ -686,7 +705,19 @@ fn gen_expr(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
         g = g.emit(" = ")
         g = gen_expr(g, expr.right[0], type_map)
     } else if expr.kind == "if" {
-        g = gen_if(g, expr, type_map)
+        // If both branches are single simple expressions (not if-chains), emit as ternary
+        let can_ternary = expr.body.len() == 1 && expr.else_body.len() == 1 && expr.body[0].kind == "expr" && expr.else_body[0].kind == "expr" && expr.else_body[0].expr.kind != "if" && expr.body[0].expr.kind != "assign" && expr.else_body[0].expr.kind != "assign"
+        if can_ternary {
+            g = g.emit("(")
+            g = gen_expr(g, expr.left[0], type_map)
+            g = g.emit(" ? ")
+            g = gen_expr(g, expr.body[0].expr, type_map)
+            g = g.emit(" : ")
+            g = gen_expr(g, expr.else_body[0].expr, type_map)
+            g = g.emit(")")
+        } else {
+            g = gen_if(g, expr, type_map)
+        }
     } else if expr.kind == "while" {
         g = gen_while(g, expr, type_map)
     } else if expr.kind == "for" {
@@ -887,6 +918,118 @@ fn gen_method_call(gen: CodeGen, obj: Expr, method: str, args: [Expr], type_map:
         if args.len() > 0 {
             g = gen_expr(g, args[0], type_map)
         }
+        g = g.emit("\})")
+    } else if method == "map" && has_closure_arg(args, 0) {
+        let obj_type = infer_expr_type(obj, type_map)
+        let elem_t = if obj_type.starts_with("ForgeArray<") { forge_array_elem(obj_type) } else { "int64_t" }
+        let closure = args[0]
+        let param_name = get_closure_param(closure, 0)
+        let body_expr = get_closure_body(closure)
+        // Emit: ({ ForgeArray _src = obj; ForgeArray _dst = forge_array_new(sizeof(elem_t));
+        //          for(i=0;i<_src.len;i++) { elem_t param = get; elem_t _val = body; _dst = push(_dst, &_val); } _dst; })
+        g = g.emit("(\{\n")
+        g.indent = g.indent + 1
+        g = g.emit_line("ForgeArray _src = ")
+        // hack: re-emit on same line
+        g.output = g.output.substring(0, g.output.len() - 1)
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(";\n")
+        g = g.emit_line("ForgeArray _dst = forge_array_new(sizeof(" + elem_t + "));")
+        g = g.emit_line("for (int64_t _ci = 0; _ci < _src.len; _ci++) \{")
+        g.indent = g.indent + 1
+        g = g.emit_line(elem_t + " " + param_name + " = *(" + elem_t + "*)forge_array_get(&_src, _ci);")
+        g = g.emit_indent()
+        g = g.emit(elem_t + " _val = ")
+        g = gen_expr(g, body_expr, type_map)
+        g = g.emit(";\n")
+        g = g.emit_line("_dst = forge_array_push(_dst, &_val);")
+        g.indent = g.indent - 1
+        g = g.emit_line("\}")
+        g = g.emit_indent()
+        g = g.emit("_dst;\n")
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\})")
+    } else if method == "filter" && has_closure_arg(args, 0) {
+        let obj_type = infer_expr_type(obj, type_map)
+        let elem_t = if obj_type.starts_with("ForgeArray<") { forge_array_elem(obj_type) } else { "int64_t" }
+        let closure = args[0]
+        let param_name = get_closure_param(closure, 0)
+        let body_expr = get_closure_body(closure)
+        g = g.emit("(\{\n")
+        g.indent = g.indent + 1
+        g = g.emit_line("ForgeArray _src = ")
+        g.output = g.output.substring(0, g.output.len() - 1)
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(";\n")
+        g = g.emit_line("ForgeArray _dst = forge_array_new(sizeof(" + elem_t + "));")
+        g = g.emit_line("for (int64_t _ci = 0; _ci < _src.len; _ci++) \{")
+        g.indent = g.indent + 1
+        g = g.emit_line(elem_t + " " + param_name + " = *(" + elem_t + "*)forge_array_get(&_src, _ci);")
+        g = g.emit_indent()
+        g = g.emit("if (")
+        g = gen_expr(g, body_expr, type_map)
+        g = g.emit(") _dst = forge_array_push(_dst, &" + param_name + ");\n")
+        g.indent = g.indent - 1
+        g = g.emit_line("\}")
+        g = g.emit_indent()
+        g = g.emit("_dst;\n")
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\})")
+    } else if method == "fold" && has_closure_arg(args, 1) {
+        let obj_type = infer_expr_type(obj, type_map)
+        let elem_t = if obj_type.starts_with("ForgeArray<") { forge_array_elem(obj_type) } else { "int64_t" }
+        let closure = args[1]
+        let acc_name = get_closure_param(closure, 0)
+        let elem_name = get_closure_param(closure, 1)
+        let body_expr = get_closure_body(closure)
+        g = g.emit("(\{\n")
+        g.indent = g.indent + 1
+        g = g.emit_line("ForgeArray _src = ")
+        g.output = g.output.substring(0, g.output.len() - 1)
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(";\n")
+        g = g.emit_indent()
+        g = g.emit(elem_t + " " + acc_name + " = ")
+        g = gen_expr(g, args[0], type_map)
+        g = g.emit(";\n")
+        g = g.emit_line("for (int64_t _ci = 0; _ci < _src.len; _ci++) \{")
+        g.indent = g.indent + 1
+        g = g.emit_line(elem_t + " " + elem_name + " = *(" + elem_t + "*)forge_array_get(&_src, _ci);")
+        g = g.emit_indent()
+        g = g.emit(acc_name + " = ")
+        g = gen_expr(g, body_expr, type_map)
+        g = g.emit(";\n")
+        g.indent = g.indent - 1
+        g = g.emit_line("\}")
+        g = g.emit_indent()
+        g = g.emit(acc_name + ";\n")
+        g.indent = g.indent - 1
+        g = g.emit_indent()
+        g = g.emit("\})")
+    } else if method == "each" && has_closure_arg(args, 0) {
+        let obj_type = infer_expr_type(obj, type_map)
+        let elem_t = if obj_type.starts_with("ForgeArray<") { forge_array_elem(obj_type) } else { "int64_t" }
+        let closure = args[0]
+        let param_name = get_closure_param(closure, 0)
+        let body_expr = get_closure_body(closure)
+        g = g.emit("(\{\n")
+        g.indent = g.indent + 1
+        g = g.emit_line("ForgeArray _src = ")
+        g.output = g.output.substring(0, g.output.len() - 1)
+        g = gen_expr(g, obj, type_map)
+        g = g.emit(";\n")
+        g = g.emit_line("for (int64_t _ci = 0; _ci < _src.len; _ci++) \{")
+        g.indent = g.indent + 1
+        g = g.emit_line(elem_t + " " + param_name + " = *(" + elem_t + "*)forge_array_get(&_src, _ci);")
+        g = g.emit_indent()
+        g = gen_expr(g, body_expr, type_map)
+        g = g.emit(";\n")
+        g.indent = g.indent - 1
+        g = g.emit_line("\}")
+        g.indent = g.indent - 1
+        g = g.emit_indent()
         g = g.emit("\})")
     } else if method == "to_str" || method == "to_string" {
         g = g.emit("forge_i64_to_str(")
@@ -1291,7 +1434,8 @@ fn gen_interp_part(gen: CodeGen, part: str, type_map: str) -> CodeGen {
                 g = g.emit("forge_f64_to_str(" + content + ")")
             }
         } else {
-            g = g.emit(content)
+            // Unknown type — default to int-to-string for simple identifiers
+            g = g.emit("forge_i64_to_str((int64_t)" + content + ")")
         }
     }
     g
@@ -1364,6 +1508,42 @@ fn rewrite_method_call(content: str, type_map: str) -> str {
     } else {
         content
     }
+}
+
+// Check if an expression is a closure: call(ident("__closure"), [params_str, body])
+fn has_closure_arg(args: [Expr], idx: i64) -> bool {
+    if idx >= args.len() { return false }
+    is_closure(args[idx])
+}
+
+fn is_closure(expr: Expr) -> bool {
+    if expr.kind != "call" { return false }
+    if expr.left.len() == 0 { return false }
+    let callee = expr.left[0]
+    if callee.kind != "ident" { return false }
+    callee.value == "__closure"
+}
+
+// Get the nth parameter name from a closure
+fn get_closure_param(closure: Expr, n: i64) -> str {
+    // closure.args[0] is a string like "x" or "acc,x"
+    let params_str = closure.args[0].value
+    // Strip quotes if present
+    let ps = strip_quotes(params_str)
+    if n == 0 {
+        let comma = find_char(ps, ",")
+        if comma < ps.len() { ps.substring(0, comma) }
+        else { ps }
+    } else {
+        let comma = find_char(ps, ",")
+        if comma < ps.len() { ps.substring(comma + 1, ps.len()) }
+        else { "" }
+    }
+}
+
+// Get the body expression from a closure
+fn get_closure_body(closure: Expr) -> Expr {
+    closure.args[1]
 }
 
 fn find_char(s: str, ch: str) -> i64 {
@@ -1448,7 +1628,9 @@ fn has_interpolation(s: str) -> bool {
 }
 
 fn infer_c_type_with_map(expr: Expr, type_map: str) -> str {
-    if expr.kind == "binop" {
+    if expr.kind == "binop" && expr.value == ".." {
+        "ForgeArray<int64_t>"
+    } else if expr.kind == "binop" {
         let lt = infer_expr_type(expr.left[0], type_map)
         let rt = infer_expr_type(expr.right[0], type_map)
         if lt != "" && lt != "const char*" && lt != "int64_t" && lt != "int32_t" && lt != "double" && lt != "float" && lt != "bool" {
@@ -1471,8 +1653,8 @@ fn infer_c_type_with_map(expr: Expr, type_map: str) -> str {
             let obj_type = infer_expr_type(obj, type_map)
             if obj_type.starts_with("ForgeArray") {
                 // Array methods
-                if method_name == "push" { obj_type }
-                else if method_name == "len" { "int64_t" }
+                if method_name == "push" || method_name == "map" || method_name == "filter" { obj_type }
+                else if method_name == "len" || method_name == "fold" { "int64_t" }
                 else { "int64_t" }
             } else if obj_type == "const char*" {
                 // String methods
