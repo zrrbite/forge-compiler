@@ -1,8 +1,8 @@
 {
   "name": "forge-lang",
   "displayName": "Forge Language",
-  "description": "Syntax highlighting for the Forge programming language",
-  "version": "0.1.0",
+  "description": "Syntax highlighting and language server for the Forge programming language",
+  "version": "0.2.0",
   "publisher": "zrrbite",
   "repository": {
     "type": "git",
@@ -11,13 +11,24 @@
   "engines": {
     "vscode": "^1.75.0"
   },
-  "categories": ["Programming Languages"],
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:forge"
+  ],
+  "main": "./extension.js",
   "contributes": {
     "languages": [
       {
         "id": "forge",
-        "aliases": ["Forge", "forge"],
-        "extensions": [".fg"],
+        "aliases": [
+          "Forge",
+          "forge"
+        ],
+        "extensions": [
+          ".fg"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -27,6 +38,19 @@
         "scopeName": "source.forge",
         "path": "./syntaxes/forge.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Forge",
+      "properties": {
+        "forge.lspPath": {
+          "type": "string",
+          "default": "forge-lsp",
+          "description": "Path to the forge-lsp binary"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
   }
 }
