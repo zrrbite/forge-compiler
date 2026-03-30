@@ -11,3 +11,4 @@ vec2
 *~
 .vscode/
 .idea/
+editors/vscode/*.vsix
