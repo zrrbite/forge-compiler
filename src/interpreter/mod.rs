@@ -993,10 +993,104 @@ impl Interpreter {
                 items.reverse();
                 return Outcome::Val(Value::Array(items));
             }
-            (Value::Array(items), "sorted") => {
+            (Value::Array(items), "sorted") | (Value::Array(items), "sort") => {
                 let mut items = items.clone();
-                items.sort_by_key(|a| a.to_string());
+                items.sort_by(|a, b| match (a, b) {
+                    (Value::Int(a), Value::Int(b)) => a.cmp(b),
+                    (Value::Float(a), Value::Float(b)) => {
+                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                    _ => a.to_string().cmp(&b.to_string()),
+                });
                 return Outcome::Val(Value::Array(items));
+            }
+            (Value::Array(items), "min") => {
+                if items.is_empty() {
+                    return Outcome::Val(Value::Variant {
+                        name: "None".into(),
+                        fields: vec![],
+                    });
+                }
+                let mut best = items[0].clone();
+                for item in &items[1..] {
+                    match (&best, item) {
+                        (Value::Int(a), Value::Int(b)) if b < a => best = item.clone(),
+                        (Value::Float(a), Value::Float(b)) if b < a => best = item.clone(),
+                        _ => {}
+                    }
+                }
+                return Outcome::Val(best);
+            }
+            (Value::Array(items), "max") => {
+                if items.is_empty() {
+                    return Outcome::Val(Value::Variant {
+                        name: "None".into(),
+                        fields: vec![],
+                    });
+                }
+                let mut best = items[0].clone();
+                for item in &items[1..] {
+                    match (&best, item) {
+                        (Value::Int(a), Value::Int(b)) if b > a => best = item.clone(),
+                        (Value::Float(a), Value::Float(b)) if b > a => best = item.clone(),
+                        _ => {}
+                    }
+                }
+                return Outcome::Val(best);
+            }
+            (Value::Array(items), "sum") => {
+                let mut total: i128 = 0;
+                let mut is_float = false;
+                let mut ftotal: f64 = 0.0;
+                for item in items {
+                    match item {
+                        Value::Int(n) => {
+                            total += n;
+                            ftotal += *n as f64;
+                        }
+                        Value::Float(f) => {
+                            is_float = true;
+                            ftotal += f;
+                        }
+                        _ => {}
+                    }
+                }
+                return if is_float {
+                    Outcome::Val(Value::Float(ftotal))
+                } else {
+                    Outcome::Val(Value::Int(total))
+                };
+            }
+            (Value::Array(items), "enumerate") => {
+                let pairs: Vec<Value> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| Value::Array(vec![Value::Int(i as i128), v.clone()]))
+                    .collect();
+                return Outcome::Val(Value::Array(pairs));
+            }
+            (Value::Array(items), "flatten") => {
+                let mut flat = Vec::new();
+                for item in items {
+                    if let Value::Array(inner) = item {
+                        flat.extend(inner.iter().cloned());
+                    } else {
+                        flat.push(item.clone());
+                    }
+                }
+                return Outcome::Val(Value::Array(flat));
+            }
+            (Value::Array(items), "dedup") => {
+                let mut seen = Vec::new();
+                let mut result = Vec::new();
+                for item in items {
+                    let key = item.to_string();
+                    if !seen.contains(&key) {
+                        seen.push(key);
+                        result.push(item.clone());
+                    }
+                }
+                return Outcome::Val(Value::Array(result));
             }
             (Value::Array(items), "join") => {
                 if args.len() != 1 {
