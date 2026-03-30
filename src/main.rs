@@ -24,6 +24,24 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "init" => {
+                let name = if i + 1 < args.len() {
+                    i += 1;
+                    args[i].clone()
+                } else {
+                    "my-project".to_string()
+                };
+                init_project(&name);
+                return;
+            }
+            "--help" | "-h" => {
+                print_usage();
+                return;
+            }
+            "--version" | "-V" => {
+                println!("forge 0.7.0");
+                return;
+            }
             "--tokens" => dump_tokens = true,
             "--ast" => dump_ast = true,
             "--ir" => dump_ir = true,
@@ -306,4 +324,62 @@ fn print_repl_value(val: &Value) {
         Value::Unit => {} // Don't print ()
         _ => println!("{val}"),
     }
+}
+
+fn print_usage() {
+    eprintln!("Forge 0.7.0 — A systems language with Rust's safety and C++'s power");
+    eprintln!();
+    eprintln!("Usage: forge [command] [options] [file.fg] [args...]");
+    eprintln!();
+    eprintln!("Commands:");
+    eprintln!("  init [name]       Create a new Forge project");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  -e <code>         Evaluate code directly");
+    eprintln!("  --compile, -c     Compile to native binary");
+    eprintln!("  -o <file>         Output binary name (with --compile)");
+    eprintln!("  --tokens          Dump token stream");
+    eprintln!("  --ast             Dump AST");
+    eprintln!("  --ir              Dump LLVM IR");
+    eprintln!("  --help, -h        Show this help");
+    eprintln!("  --version, -V     Show version");
+    eprintln!();
+    eprintln!("Examples:");
+    eprintln!("  forge                          Start REPL");
+    eprintln!("  forge hello.fg                 Run a program");
+    eprintln!("  forge -e 'print(2 + 2)'        Evaluate inline");
+    eprintln!("  forge --compile hello.fg        Compile to binary");
+    eprintln!("  forge init my-project           Create new project");
+}
+
+fn init_project(name: &str) {
+    let dir = Path::new(name);
+    if dir.exists() {
+        eprintln!("Error: '{name}' already exists");
+        process::exit(1);
+    }
+
+    fs::create_dir_all(dir).unwrap_or_else(|e| {
+        eprintln!("Error creating directory: {e}");
+        process::exit(1);
+    });
+
+    let main_content = format!(
+        r#"// {name} — a Forge project
+
+fn main() {{
+    print("Hello from {name}!")
+}}
+"#
+    );
+
+    fs::write(dir.join("main.fg"), main_content).unwrap_or_else(|e| {
+        eprintln!("Error writing main.fg: {e}");
+        process::exit(1);
+    });
+
+    println!("Created project '{name}'");
+    println!();
+    println!("  cd {name}");
+    println!("  forge main.fg");
 }
