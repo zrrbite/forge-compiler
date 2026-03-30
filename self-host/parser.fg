@@ -399,11 +399,32 @@ fn parse_match_expr(p: &mut Parser) -> Expr {
     let scr = parse_expr(p)
     p.skip_newlines()
     p.expect("op", "\{")
-    let mut depth = 1
-    while depth > 0 { let tok = p.advance()
-        if tok.value == "\{" { depth = depth + 1 }
-        else if tok.value == "\}" { depth = depth - 1 } }
-    Expr.new_call(Expr.new_ident("__match"), [scr])
+    p.skip_newlines()
+    // Parse match arms and convert to if/else chain
+    // Each arm: Pattern => body
+    let mut arms = []
+    while p.peek().value != "\}" {
+        // Parse pattern: ident or ident(binding)
+        let pat_name = p.expect("ident", "").value
+        let mut binding = ""
+        if p.peek().value == "(" {
+            p.advance()
+            binding = p.expect("ident", "").value
+            p.expect("op", ")")
+        }
+        p.expect("op", "=>")
+        let body = parse_expr(p)
+        arms.push(Expr.new_binop("=>", Expr.new_binop(":", Expr.new_ident(pat_name), Expr.new_ident(binding)), body))
+        p.eat("op", ",")
+        p.skip_newlines()
+    }
+    p.expect("op", "\}")
+    // Encode as: __match(scrutinee, arm1, arm2, ...)
+    let mut all_args = [scr]
+    for arm in arms {
+        all_args.push(arm)
+    }
+    Expr.new_call(Expr.new_ident("__match"), all_args)
 }
 
 fn parse_for_expr(p: &mut Parser) -> Expr {

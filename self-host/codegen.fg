@@ -784,7 +784,9 @@ fn gen_call(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
     let mut g = gen
     let callee = expr.left[0]
 
-    if callee.kind == "ident" && callee.value == "print" {
+    if callee.kind == "ident" && callee.value == "__match" {
+        g = gen_match(g, expr.args, type_map)
+    } else if callee.kind == "ident" && callee.value == "print" {
         g = gen_print(g, expr.args, type_map)
     } else if callee.kind == "field" {
         let obj = callee.left[0]
@@ -888,6 +890,12 @@ fn gen_method_call(gen: CodeGen, obj: Expr, method: str, args: [Expr], type_map:
         g = g.emit("fabs(")
         g = gen_expr(g, obj, type_map)
         g = g.emit(")")
+    } else if method == "last" && infer_expr_type(obj, type_map).starts_with("ForgeArray") {
+        // .last() returns the array for Option-style matching (check len > 0, get last elem)
+        g = gen_expr(g, obj, type_map)
+    } else if method == "pop" && infer_expr_type(obj, type_map).starts_with("ForgeArray") {
+        // .pop() returns the array for Option-style matching
+        g = gen_expr(g, obj, type_map)
     } else if method == "substring" {
         // str.substring(start, end) -> forge_substring(str, start, end)
         g = g.emit("forge_substring(")
@@ -1229,6 +1237,80 @@ fn gen_return_if(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
     g
 }
 
+// Generate match expression as if/else chain.
+// For Some(val)/None patterns on arrays: check len > 0 and extract element.
+fn gen_match(gen: CodeGen, match_args: [Expr], type_map: str) -> CodeGen {
+    let mut g = gen
+    if match_args.len() < 2 {
+        g = g.emit("/* empty match */")
+        return g
+    }
+    let scrutinee = match_args[0]
+    // Generate: { type _scr = scrutinee; if (_scr.len > 0) { ... } else { ... } }
+    g = g.emit("\{\n")
+    g.indent = g.indent + 1
+    let scr_type = infer_expr_type(scrutinee, type_map)
+    g = g.emit_indent()
+    g = g.emit(c_emit_type(scr_type) + " _scr = ")
+    g = gen_expr(g, scrutinee, type_map)
+    g = g.emit(";\n")
+
+    let mut first_arm = true
+    let mut i = 1
+    while i < match_args.len() {
+        let arm = match_args[i]
+        // arm is binop("=>", binop(":", ident(pat), ident(binding)), body)
+        let pattern = arm.left[0]
+        let body = arm.right[0]
+        let pat_name = pattern.left[0].value
+        let binding = pattern.right[0].value
+
+        g = g.emit_indent()
+        if first_arm {
+            first_arm = false
+        } else {
+            g = g.emit("else ")
+        }
+
+        if pat_name == "Some" {
+            g = g.emit("if (_scr.len > 0) \{\n")
+            g.indent = g.indent + 1
+            if binding != "" {
+                let elem_t = if scr_type.starts_with("ForgeArray<") { forge_array_elem(scr_type) } else { "int64_t" }
+                g = g.emit_line(elem_t + " " + binding + " = *(" + elem_t + "*)forge_array_get(&_scr, _scr.len - 1);")
+            }
+            g = g.emit_indent()
+            g = gen_expr(g, body, type_map)
+            g = g.emit(";\n")
+            g.indent = g.indent - 1
+            g = g.emit_line("\}")
+        } else if pat_name == "None" {
+            g = g.emit("if (_scr.len == 0) \{\n")
+            g.indent = g.indent + 1
+            g = g.emit_indent()
+            g = gen_expr(g, body, type_map)
+            g = g.emit(";\n")
+            g.indent = g.indent - 1
+            g = g.emit_line("\}")
+        } else {
+            // Generic pattern — emit as comment
+            g = g.emit("/* match " + pat_name + " */ \{\n")
+            g.indent = g.indent + 1
+            g = g.emit_indent()
+            g = gen_expr(g, body, type_map)
+            g = g.emit(";\n")
+            g.indent = g.indent - 1
+            g = g.emit_line("\}")
+        }
+        i = i + 1
+    }
+
+    g.indent = g.indent - 1
+    g = g.emit_indent()
+    g = g.emit("\}")
+    g
+}
+
 fn gen_while(gen: CodeGen, expr: Expr, type_map: str) -> CodeGen {
     let mut g = gen
     g = g.emit("while (")
@@ -1432,6 +1514,18 @@ fn gen_interp_part(gen: CodeGen, part: str, type_map: str) -> CodeGen {
             } else {
                 // Default to double
                 g = g.emit("forge_f64_to_str(" + content + ")")
+            }
+        } else if content.contains("[") {
+            // Array indexing in interpolation: arr[i] → typed get
+            let bracket = find_char(content, "[")
+            let arr_name = content.substring(0, bracket)
+            let idx_str = content.substring(bracket + 1, content.len() - 1)
+            let arr_type = lookup_type(type_map, arr_name)
+            if arr_type.starts_with("ForgeArray<") {
+                let elem_t = forge_array_elem(arr_type)
+                g = g.emit("forge_i64_to_str((int64_t)*(" + elem_t + "*)forge_array_get(&" + arr_name + ", " + idx_str + "))")
+            } else {
+                g = g.emit("forge_i64_to_str((int64_t)" + content + ")")
             }
         } else {
             // Unknown type — default to int-to-string for simple identifiers
@@ -1653,7 +1747,7 @@ fn infer_c_type_with_map(expr: Expr, type_map: str) -> str {
             let obj_type = infer_expr_type(obj, type_map)
             if obj_type.starts_with("ForgeArray") {
                 // Array methods
-                if method_name == "push" || method_name == "map" || method_name == "filter" { obj_type }
+                if method_name == "push" || method_name == "map" || method_name == "filter" || method_name == "last" || method_name == "pop" { obj_type }
                 else if method_name == "len" || method_name == "fold" { "int64_t" }
                 else { "int64_t" }
             } else if obj_type == "const char*" {
