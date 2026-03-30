@@ -323,7 +323,9 @@ impl Interpreter {
             },
         );
         // Process/IO builtins.
-        for name in ["args", "exit", "exec", "input"] {
+        for name in [
+            "args", "exit", "exec", "input", "env_get", "env_set", "env_vars",
+        ] {
             self.env
                 .define(name.into(), Value::Function(FnValue::Builtin(name.into())));
         }
@@ -1671,6 +1673,32 @@ impl Interpreter {
                     }
                     Err(e) => Outcome::Error(format!("input error: {e}")),
                 }
+            }
+            "env_get" => {
+                // env_get(key) -> str (empty string if not set)
+                if let Some(Value::String(key)) = args.first() {
+                    let val = std::env::var(key).unwrap_or_default();
+                    Outcome::Val(Value::String(val))
+                } else {
+                    Outcome::Error("env_get requires a string argument".into())
+                }
+            }
+            "env_set" => {
+                // env_set(key, value)
+                if let [Value::String(key), Value::String(val), ..] = args.as_slice() {
+                    // SAFETY: Forge is single-threaded; no concurrent env access.
+                    unsafe { std::env::set_var(key, val) };
+                    Outcome::Val(Value::Unit)
+                } else {
+                    Outcome::Error("env_set requires two string arguments".into())
+                }
+            }
+            "env_vars" => {
+                // env_vars() -> [[key, value], ...]
+                let pairs: Vec<Value> = std::env::vars()
+                    .map(|(k, v)| Value::Array(vec![Value::String(k), Value::String(v)]))
+                    .collect();
+                Outcome::Val(Value::Array(pairs))
             }
             _ => Outcome::Val(Value::Unit),
         }
