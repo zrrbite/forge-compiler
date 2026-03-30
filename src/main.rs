@@ -18,6 +18,7 @@ fn main() {
     let mut compile = false;
     let mut output = None;
     let mut filename = None;
+    let mut eval_expr = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -26,6 +27,12 @@ fn main() {
             "--ast" => dump_ast = true,
             "--ir" => dump_ir = true,
             "--compile" | "-c" => compile = true,
+            "-e" => {
+                i += 1;
+                if i < args.len() {
+                    eval_expr = Some(args[i].clone());
+                }
+            }
             "-o" => {
                 i += 1;
                 if i < args.len() {
@@ -42,11 +49,25 @@ fn main() {
         i += 1;
     }
 
+    // -e flag: evaluate an expression directly
+    if let Some(expr) = eval_expr {
+        let source = format!("fn main() {{\n{expr}\n}}");
+        let (tokens, _) = Lexer::new(&source).tokenize();
+        let (program, _) = Parser::new(tokens).parse();
+        let mut interp = Interpreter::new();
+        if let Err(e) = interp.run(&program) {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+        return;
+    }
+
     let filename = match filename {
         Some(f) => f,
         None => {
             eprintln!("Usage: forge [options] <file.fg>");
             eprintln!("Options:");
+            eprintln!("  -e <code>    Evaluate code directly");
             eprintln!("  --tokens     Dump token stream");
             eprintln!("  --ast        Dump AST");
             eprintln!("  --ir         Dump LLVM IR");
@@ -56,13 +77,18 @@ fn main() {
         }
     };
 
-    let source = match fs::read_to_string(filename) {
+    let mut source = match fs::read_to_string(filename) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error reading {filename}: {e}");
             process::exit(1);
         }
     };
+
+    // Skip shebang line (#!/usr/bin/env forge)
+    if source.starts_with("#!") {
+        source = source.lines().skip(1).collect::<Vec<_>>().join("\n");
+    }
 
     // Lex
     let (tokens, lex_errors) = Lexer::new(&source).tokenize();
@@ -82,7 +108,26 @@ fn main() {
 
     // Parse
     let (mut program, parse_errors) = Parser::new(tokens).parse();
-    if !parse_errors.is_empty() {
+
+    // Implicit main: if parse fails or no fn main() exists, try wrapping in fn main() { ... }
+    let has_main = program
+        .items
+        .iter()
+        .any(|item| matches!(&item.kind, forge::ast::ItemKind::Function(f) if f.name == "main"));
+    if !has_main {
+        let wrapped = format!("fn main() {{\n{source}\n}}");
+        let (wrapped_tokens, _) = Lexer::new(&wrapped).tokenize();
+        let (wrapped_program, wrapped_errors) = Parser::new(wrapped_tokens).parse();
+        if wrapped_errors.is_empty() {
+            program = wrapped_program;
+        } else if !parse_errors.is_empty() {
+            // Both failed — show original errors
+            for err in &parse_errors {
+                eprintln!("{err}");
+            }
+            process::exit(1);
+        }
+    } else if !parse_errors.is_empty() {
         for err in &parse_errors {
             eprintln!("{err}");
         }
