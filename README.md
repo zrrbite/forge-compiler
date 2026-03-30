@@ -250,12 +250,48 @@ File.write("output.txt", "Hello!")
 ## CLI Reference
 
 ```bash
-forge <file.fg>              # Interpret (run directly)
+forge                        # Start interactive REPL
+forge <file.fg>              # Run a program
+forge -e 'print(2 + 2)'     # Evaluate inline code
+forge init my-project        # Create a new project
 forge --compile <file.fg>    # Compile to native binary
 forge --compile -o name      # Specify output binary name
 forge --ir <file.fg>         # Dump LLVM IR
 forge --ast <file.fg>        # Dump AST
 forge --tokens <file.fg>     # Dump token stream
+forge --help                 # Show all options
+```
+
+### REPL
+
+Run `forge` with no arguments to start an interactive session:
+
+```
+>>> let x = 42
+>>> x + 8
+50
+>>> [1, 2, 3].map(|n| n * n)
+[1, 4, 9]
+>>> fn fib(n: i32) -> i32 { if n <= 1 { n } else { fib(n-1) + fib(n-2) } }
+>>> fib(10)
+55
+```
+
+Variables and function definitions persist across inputs.
+
+### Scripting
+
+Forge files can be used as scripts — no `fn main()` needed:
+
+```
+#!/usr/bin/env forge
+let name = input("What's your name? ")
+print("Hello, {name}!")
+```
+
+```bash
+chmod +x script.fg
+./script.fg
 ```
 
 ## Project Status
