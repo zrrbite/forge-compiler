@@ -571,6 +571,12 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(self.context.i64_type().const_int(0, false).into())
             }
 
+            HirExprKind::Slice { object, start, end } => {
+                // Slice — stub: just return the compiled object value for now.
+                let _ = (start, end);
+                self.compile_expr(object, function)
+            }
+
             HirExprKind::Array(elements) => {
                 if elements.is_empty() {
                     return Ok(self.context.i64_type().const_int(0, false).into());

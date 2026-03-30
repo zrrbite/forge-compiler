@@ -573,6 +573,50 @@ impl Interpreter {
                 }
             }
 
+            ExprKind::Slice { object, start, end } => {
+                let obj = try_val!(self.eval_expr(object));
+                let s = if let Some(start_expr) = start {
+                    let v = try_val!(self.eval_expr(start_expr));
+                    if let Value::Int(i) = v { i as usize } else { 0 }
+                } else {
+                    0
+                };
+                match &obj {
+                    Value::Array(items) => {
+                        let e = if let Some(end_expr) = end {
+                            let v = try_val!(self.eval_expr(end_expr));
+                            if let Value::Int(i) = v {
+                                i as usize
+                            } else {
+                                items.len()
+                            }
+                        } else {
+                            items.len()
+                        };
+                        let e = e.min(items.len());
+                        let s = s.min(e);
+                        Outcome::Val(Value::Array(items[s..e].to_vec()))
+                    }
+                    Value::String(string) => {
+                        let chars: Vec<char> = string.chars().collect();
+                        let e = if let Some(end_expr) = end {
+                            let v = try_val!(self.eval_expr(end_expr));
+                            if let Value::Int(i) = v {
+                                i as usize
+                            } else {
+                                chars.len()
+                            }
+                        } else {
+                            chars.len()
+                        };
+                        let e = e.min(chars.len());
+                        let s = s.min(e);
+                        Outcome::Val(Value::String(chars[s..e].iter().collect()))
+                    }
+                    _ => Outcome::Val(Value::Unit),
+                }
+            }
+
             ExprKind::Block(block) => self.eval_block(block),
 
             ExprKind::If {

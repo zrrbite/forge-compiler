@@ -213,6 +213,11 @@ pub enum HirExprKind {
         object: Box<HirExpr>,
         index: Box<HirExpr>,
     },
+    Slice {
+        object: Box<HirExpr>,
+        start: Option<Box<HirExpr>>,
+        end: Option<Box<HirExpr>>,
+    },
     Turbofish {
         expr: Box<HirExpr>,
         types: Vec<HirType>,
