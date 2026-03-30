@@ -32,6 +32,7 @@ fn typecheck_ok(source: &str) {
     );
 }
 
+#[allow(dead_code)]
 fn typecheck_errors(source: &str) -> Vec<String> {
     use forge::hir::lower::lower;
     use forge::typeck::TypeChecker;
