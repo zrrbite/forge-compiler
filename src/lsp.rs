@@ -80,10 +80,9 @@ impl ForgeLanguageServer {
         if !lex_errors.is_empty() {
             return Vec::new();
         }
-        let (program, parse_errors) = Parser::new(tokens).parse();
-        if !parse_errors.is_empty() {
-            return Vec::new();
-        }
+        // Collect symbols even if there are parse errors — the parser
+        // does error recovery and still produces partial AST items.
+        let (program, _parse_errors) = Parser::new(tokens).parse();
 
         let mut symbols = Vec::new();
         for item in &program.items {
