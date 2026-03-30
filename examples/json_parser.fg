@@ -1,0 +1,238 @@
+// json_parser.fg — A JSON parser written in Forge.
+// Stress test for string manipulation, recursion, and data structures.
+//
+// Uses a global-style approach: source string is read once,
+// position is tracked via a mutable variable passed through returns.
+
+struct JsonValue {
+    kind: str,
+    str_val: str,
+    num_val: f64,
+    bool_val: bool,
+    items: [JsonValue],
+    keys: [str],
+    vals: [JsonValue],
+}
+
+impl JsonValue {
+    fn null() -> JsonValue { JsonValue { kind: "null", str_val: "", num_val: 0.0, bool_val: false, items: [], keys: [], vals: [] } }
+    fn bool(v: bool) -> JsonValue { JsonValue { kind: "bool", str_val: "", num_val: 0.0, bool_val: v, items: [], keys: [], vals: [] } }
+    fn number(v: f64) -> JsonValue { JsonValue { kind: "number", str_val: "", num_val: v, bool_val: false, items: [], keys: [], vals: [] } }
+    fn string(v: str) -> JsonValue { JsonValue { kind: "string", str_val: v, num_val: 0.0, bool_val: false, items: [], keys: [], vals: [] } }
+    fn array(v: [JsonValue]) -> JsonValue { JsonValue { kind: "array", str_val: "", num_val: 0.0, bool_val: false, items: v, keys: [], vals: [] } }
+    fn object(k: [str], v: [JsonValue]) -> JsonValue { JsonValue { kind: "object", str_val: "", num_val: 0.0, bool_val: false, items: [], keys: k, vals: v } }
+
+    fn display(self) -> str {
+        if self.kind == "null" { "null" }
+        else if self.kind == "bool" { to_str(self.bool_val) }
+        else if self.kind == "number" { to_str(self.num_val) }
+        else if self.kind == "string" { "\"" + self.str_val + "\"" }
+        else if self.kind == "array" {
+            let mut parts = []
+            for item in self.items { parts.push(item.display()) }
+            "[" + parts.join(", ") + "]"
+        } else if self.kind == "object" {
+            let mut parts = []
+            let mut i = 0
+            while i < self.keys.len() {
+                parts.push("\"" + self.keys[i] + "\": " + self.vals[i].display())
+                i = i + 1
+            }
+            "\{" + parts.join(", ") + "\}"
+        } else { "?" }
+    }
+}
+
+// Result of parsing: the value + new position
+struct ParseResult {
+    val: JsonValue,
+    pos: i64,
+}
+
+fn pk(src: str, pos: i64) -> str {
+    if pos < src.len() { src.char_at(pos) } else { "" }
+}
+
+fn skip_ws(src: str, pos: i64) -> i64 {
+    let mut p = pos
+    let mut going = true
+    while going {
+        let ch = pk(src, p)
+        if ch == "" {
+            going = false
+        } else if ch.is_whitespace() {
+            p = p + 1
+        } else {
+            going = false
+        }
+    }
+    p
+}
+
+fn jp(src: str, pos: i64) -> ParseResult {
+    let p = skip_ws(src, pos)
+    let ch = pk(src, p)
+    if ch == "\"" { jp_str(src, p) }
+    else if ch == "\{" { jp_obj(src, p) }
+    else if ch == "[" { jp_arr(src, p) }
+    else if ch == "t" { ParseResult { val: JsonValue.bool(true), pos: p + 4 } }
+    else if ch == "f" { ParseResult { val: JsonValue.bool(false), pos: p + 5 } }
+    else if ch == "n" { ParseResult { val: JsonValue.null(), pos: p + 4 } }
+    else { jp_num(src, p) }
+}
+
+fn jp_str(src: str, pos: i64) -> ParseResult {
+    let mut p = pos + 1
+    let mut result = ""
+    let mut going = true
+    while going {
+        let c = pk(src, p)
+        p = p + 1
+        if c == "\"" {
+            going = false
+        } else if c == "\\" {
+            let esc = pk(src, p)
+            p = p + 1
+            if esc == "n" { result = result + "\n" }
+            else if esc == "t" { result = result + "\t" }
+            else { result = result + esc }
+        } else {
+            result = result + c
+        }
+    }
+    ParseResult { val: JsonValue.string(result), pos: p }
+}
+
+fn jp_num(src: str, pos: i64) -> ParseResult {
+    let mut p = pos
+    let mut s = ""
+    let mut going = true
+    while going {
+        let ch = pk(src, p)
+        if ch == "" {
+            going = false
+        } else if ch.is_digit() {
+            s = s + ch
+            p = p + 1
+        } else if ch == "." || ch == "-" || ch == "e" || ch == "E" {
+            s = s + ch
+            p = p + 1
+        } else {
+            going = false
+        }
+    }
+    ParseResult { val: JsonValue.number(s.parse_float().unwrap()), pos: p }
+}
+
+fn jp_arr(src: str, pos: i64) -> ParseResult {
+    let mut p = pos + 1
+    p = skip_ws(src, p)
+    let mut items = []
+    if pk(src, p) != "]" {
+        let r = jp(src, p)
+        items.push(r.val)
+        p = skip_ws(src, r.pos)
+        while pk(src, p) == "," {
+            p = p + 1
+            let r2 = jp(src, p)
+            items.push(r2.val)
+            p = skip_ws(src, r2.pos)
+        }
+    }
+    ParseResult { val: JsonValue.array(items), pos: p + 1 }
+}
+
+fn jp_obj(src: str, pos: i64) -> ParseResult {
+    let mut p = pos + 1
+    p = skip_ws(src, p)
+    let mut keys = []
+    let mut vals = []
+    if pk(src, p) != "\}" {
+        let kr = jp_str(src, p)
+        p = skip_ws(src, kr.pos)
+        p = p + 1
+        let vr = jp(src, p)
+        keys.push(kr.val.str_val)
+        vals.push(vr.val)
+        p = skip_ws(src, vr.pos)
+        while pk(src, p) == "," {
+            p = p + 1
+            p = skip_ws(src, p)
+            let kr2 = jp_str(src, p)
+            p = skip_ws(src, kr2.pos)
+            p = p + 1
+            let vr2 = jp(src, p)
+            keys.push(kr2.val.str_val)
+            vals.push(vr2.val)
+            p = skip_ws(src, vr2.pos)
+        }
+    }
+    ParseResult { val: JsonValue.object(keys, vals), pos: p + 1 }
+}
+
+fn json_get(obj: JsonValue, key: str) -> JsonValue {
+    let mut i = 0
+    while i < obj.keys.len() {
+        if obj.keys[i] == key { return obj.vals[i] }
+        i = i + 1
+    }
+    JsonValue.null()
+}
+
+fn parse_json(input: str) -> JsonValue {
+    let result = jp(input, 0)
+    result.val
+}
+
+fn main() {
+    print("=== JSON Parser Stress Test ===")
+    print("")
+
+    // Test 1: Simple object
+    let input1 = "\{\"name\": \"Forge\", \"version\": 0.7, \"compiled\": true\}"
+    let val1 = parse_json(input1)
+    print("Input:  {input1}")
+    print("Parsed: {val1.display()}")
+    let v_name = json_get(val1, "name")
+    let v_ver = json_get(val1, "version")
+    let v_comp = json_get(val1, "compiled")
+    print("  name:     {v_name.str_val}")
+    print("  version:  {v_ver.num_val}")
+    print("  compiled: {v_comp.bool_val}")
+    print("")
+
+    // Test 2: Array of numbers
+    let val2 = parse_json("[1, 2, 3, 4, 5]")
+    print("Input:  [1, 2, 3, 4, 5]")
+    print("Parsed: {val2.display()}")
+    print("  length: {val2.items.len()}")
+    print("  sum:    {val2.items.map(|v| v.num_val).sum()}")
+    print("")
+
+    // Test 3: Nested objects
+    let input3 = "\{\"user\": \{\"name\": \"Alice\", \"age\": 30\}, \"active\": true\}"
+    let val3 = parse_json(input3)
+    print("Input:  {input3}")
+    print("Parsed: {val3.display()}")
+    let user = json_get(val3, "user")
+    let u_name = json_get(user, "name")
+    let u_age = json_get(user, "age")
+    print("  user.name: {u_name.str_val}")
+    print("  user.age:  {u_age.num_val}")
+    print("")
+
+    // Test 4: Mixed array
+    let val4 = parse_json("[\"hello\", 42, true, null, [1, 2]]")
+    print("Input:  [\"hello\", 42, true, null, [1, 2]]")
+    print("Parsed: {val4.display()}")
+    print("")
+
+    // Test 5: Empty structures
+    let input5 = "\{\"empty_arr\": [], \"empty_obj\": \{\}\}"
+    let val5 = parse_json(input5)
+    print("Input:  {input5}")
+    print("Parsed: {val5.display()}")
+    print("")
+
+    print("=== All tests passed! ===")
+}
