@@ -679,6 +679,60 @@ impl Interpreter {
                 }
             }
 
+            ExprKind::SafeNav {
+                object,
+                field,
+                call_args,
+            } => {
+                let val = try_val!(self.eval_expr(object));
+                match &val {
+                    // None/Err -> propagate None
+                    Value::Variant { name, .. } if name == "None" || name == "Err" => {
+                        Outcome::Val(val)
+                    }
+                    // Some(v) -> unwrap and access field/method
+                    Value::Variant { name, fields } if name == "Some" || name == "Ok" => {
+                        let inner = fields.first().cloned().unwrap_or(Value::Unit);
+                        if let Some(args) = call_args {
+                            self.eval_method_call(inner, field, args)
+                        } else {
+                            // Field access on the inner value
+                            match &inner {
+                                Value::Struct { fields: sf, .. } => {
+                                    Outcome::Val(sf.get(field).cloned().unwrap_or(Value::Unit))
+                                }
+                                _ => self.eval_method_call(inner, field, &[]),
+                            }
+                        }
+                    }
+                    // Not an Option/Result — just do normal field access
+                    _ => {
+                        if let Some(args) = call_args {
+                            self.eval_method_call(val, field, args)
+                        } else {
+                            match &val {
+                                Value::Struct { fields: sf, .. } => {
+                                    Outcome::Val(sf.get(field).cloned().unwrap_or(Value::Unit))
+                                }
+                                _ => self.eval_method_call(val, field, &[]),
+                            }
+                        }
+                    }
+                }
+            }
+
+            ExprKind::NullCoalesce { expr, default } => {
+                let val = try_val!(self.eval_expr(expr));
+                match &val {
+                    Value::Variant { name, .. } if name == "None" => self.eval_expr(default),
+                    Value::Variant { name, .. } if name == "Err" => self.eval_expr(default),
+                    Value::Variant { name, fields } if name == "Some" || name == "Ok" => {
+                        Outcome::Val(fields.first().cloned().unwrap_or(Value::Unit))
+                    }
+                    _ => Outcome::Val(val),
+                }
+            }
+
             ExprKind::Turbofish { expr, .. } => self.eval_expr(expr),
 
             ExprKind::Array(elements) => {

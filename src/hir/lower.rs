@@ -386,6 +386,23 @@ impl Lowering {
 
             ast::ExprKind::Try(expr) => HirExprKind::Try(Box::new(self.lower_expr(expr))),
 
+            ast::ExprKind::SafeNav {
+                object,
+                field,
+                call_args,
+            } => HirExprKind::SafeNav {
+                object: Box::new(self.lower_expr(object)),
+                field: field.clone(),
+                call_args: call_args
+                    .as_ref()
+                    .map(|args| args.iter().map(|a| self.lower_expr(a)).collect()),
+            },
+
+            ast::ExprKind::NullCoalesce { expr, default } => HirExprKind::NullCoalesce {
+                expr: Box::new(self.lower_expr(expr)),
+                default: Box::new(self.lower_expr(default)),
+            },
+
             ast::ExprKind::Range {
                 start,
                 end,

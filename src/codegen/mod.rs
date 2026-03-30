@@ -600,6 +600,8 @@ impl<'ctx> Codegen<'ctx> {
             | HirExprKind::Dereference(inner)
             | HirExprKind::Try(inner)
             | HirExprKind::Turbofish { expr: inner, .. } => self.compile_expr(inner, function),
+            HirExprKind::SafeNav { object, .. } => self.compile_expr(object, function),
+            HirExprKind::NullCoalesce { expr, .. } => self.compile_expr(expr, function),
         }
     }
 
