@@ -279,6 +279,12 @@ impl Lowering {
                 index: Box::new(self.lower_expr(index)),
             },
 
+            ast::ExprKind::Slice { object, start, end } => HirExprKind::Slice {
+                object: Box::new(self.lower_expr(object)),
+                start: start.as_ref().map(|e| Box::new(self.lower_expr(e))),
+                end: end.as_ref().map(|e| Box::new(self.lower_expr(e))),
+            },
+
             ast::ExprKind::Turbofish { expr, types } => HirExprKind::Turbofish {
                 expr: Box::new(self.lower_expr(expr)),
                 types: types.iter().map(|t| self.lower_type(t)).collect(),

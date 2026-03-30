@@ -841,14 +841,53 @@ impl Parser {
                 }
                 TokenKind::LBracket => {
                     self.advance();
-                    let index = self.parse_expr()?;
-                    let end = self.expect(&TokenKind::RBracket)?;
-                    Expr {
-                        span: Span::new(lhs.span.start, end.end),
-                        kind: ExprKind::Index {
-                            object: Box::new(lhs),
-                            index: Box::new(index),
-                        },
+                    // Check for slice syntax: arr[:end], arr[start:end], arr[start:]
+                    if *self.peek_kind() == TokenKind::Colon {
+                        // arr[:end]
+                        self.advance(); // consume :
+                        let slice_end = if *self.peek_kind() == TokenKind::RBracket {
+                            None
+                        } else {
+                            Some(Box::new(self.parse_expr()?))
+                        };
+                        let end = self.expect(&TokenKind::RBracket)?;
+                        Expr {
+                            span: Span::new(lhs.span.start, end.end),
+                            kind: ExprKind::Slice {
+                                object: Box::new(lhs),
+                                start: None,
+                                end: slice_end,
+                            },
+                        }
+                    } else {
+                        let index = self.parse_expr()?;
+                        if *self.peek_kind() == TokenKind::Colon {
+                            // arr[start:end] or arr[start:]
+                            self.advance(); // consume :
+                            let slice_end = if *self.peek_kind() == TokenKind::RBracket {
+                                None
+                            } else {
+                                Some(Box::new(self.parse_expr()?))
+                            };
+                            let end = self.expect(&TokenKind::RBracket)?;
+                            Expr {
+                                span: Span::new(lhs.span.start, end.end),
+                                kind: ExprKind::Slice {
+                                    object: Box::new(lhs),
+                                    start: Some(Box::new(index)),
+                                    end: slice_end,
+                                },
+                            }
+                        } else {
+                            let end = self.expect(&TokenKind::RBracket)?;
+                            Expr {
+                                span: Span::new(lhs.span.start, end.end),
+                                kind: ExprKind::Index {
+                                    object: Box::new(lhs),
+                                    index: Box::new(index),
+                                },
+                            }
+                        }
                     }
                 }
                 TokenKind::ColonColon => {

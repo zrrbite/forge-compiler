@@ -457,6 +457,17 @@ impl TypeChecker {
                 }
             }
 
+            HirExprKind::Slice { object, start, end } => {
+                let obj_ty = self.check_expr(object);
+                if let Some(s) = start {
+                    self.check_expr(s);
+                }
+                if let Some(e) = end {
+                    self.check_expr(e);
+                }
+                obj_ty
+            }
+
             HirExprKind::Block(block) => {
                 self.symbols.push_scope();
                 let ty = self.check_block(block);

@@ -180,6 +180,12 @@ pub enum ExprKind {
     FieldAccess { object: Box<Expr>, field: String },
     /// Index: `x[i]`
     Index { object: Box<Expr>, index: Box<Expr> },
+    /// Slice: `x[start:end]`, `x[:end]`, `x[start:]`
+    Slice {
+        object: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+    },
     /// Block expression: `{ ... }`
     Block(Block),
     /// If expression: `if cond { ... } else { ... }`

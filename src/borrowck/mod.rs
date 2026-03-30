@@ -409,6 +409,15 @@ impl BorrowChecker {
                 self.check_expr(object);
                 self.check_expr(index);
             }
+            HirExprKind::Slice { object, start, end } => {
+                self.check_expr(object);
+                if let Some(s) = start {
+                    self.check_expr(s);
+                }
+                if let Some(e) = end {
+                    self.check_expr(e);
+                }
+            }
             HirExprKind::Block(block) => {
                 self.push_scope();
                 self.check_block(block);
