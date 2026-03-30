@@ -260,7 +260,8 @@ forge --tokens <file.fg>     # Dump token stream
 
 ## Project Status
 
-Forge is a working language with an interpreter and LLVM compilation backend.
+Forge is a working language with an interpreter, LLVM compilation backend, and
+a self-hosted compiler written in Forge itself.
 
 | Component | Status |
 |-----------|--------|
@@ -273,7 +274,22 @@ Forge is a working language with an interpreter and LLVM compilation backend.
 | LLVM Codegen | Partial — functions, structs, methods, loops, if/else |
 | Standard Library | Growing — print, math, file I/O, HashMap |
 | Module System | Complete — use declarations, multi-file programs |
-| Test Suite | 307 tests across all phases |
+| Self-Hosted Compiler | Working — all 11 reference programs compile via C |
+| Test Suite | 319 tests across all phases |
+
+### Self-Hosted Compiler
+
+The `self-host/` directory contains a Forge compiler written in Forge. It
+transpiles Forge source to C, then calls `cc` to produce a native binary:
+
+```bash
+forge self-host/compile.fg tests/samples/hello.fg hello
+./hello    # Hello, Martin!
+```
+
+All 11 reference programs in `tests/samples/` compile and run correctly through
+the self-hosted pipeline. See [Self-Hosting](docs/11-self-hosting.md) for
+architecture and status details.
 
 ## Performance
 
@@ -300,18 +316,26 @@ across Forge, Rust, C++, Zig, and Go.
 
 ## Documentation
 
-Detailed documentation is in the `docs/` directory:
+### Language
 
-- [Language Design](docs/01-language-design.md) — design decisions and feature origins
+- [Language Design](docs/01-language-design.md) — philosophy, types, operators
+- [Standard Library](docs/09-stdlib.md) — built-in functions and methods
+- [Comparisons](docs/10-comparisons.md) — benchmarks and syntax vs Rust, C++, Zig, Go
+
+### Compiler Internals
+
 - [Lexer](docs/02-lexer.md) — tokenization and string interpolation
 - [Parser](docs/03-parser.md) — recursive descent + Pratt parsing
 - [Interpreter](docs/04-interpreter.md) — tree-walk evaluation
-- [Roadmap](docs/05-whats-next.md) — what's done, what's next
 - [Codegen](docs/06-codegen.md) — LLVM IR generation
 - [Borrow Checker](docs/07-borrowck.md) — ownership and borrowing
 - [Comptime](docs/08-comptime.md) — compile-time evaluation
-- [Standard Library](docs/09-stdlib.md) — built-in functions
-- [Comparisons](docs/10-comparisons.md) — benchmarks and syntax comparisons vs Rust, C++, Zig, Go
+- [Self-Hosting](docs/11-self-hosting.md) — the Forge compiler written in Forge
+
+### Contributing
+
+- [Developer Guide](docs/DEVELOPERS.md) — architecture, build system, testing, how to contribute
+- [Roadmap](docs/05-whats-next.md) — what's done, what's next
 
 ## Building from Source
 
@@ -319,7 +343,7 @@ Detailed documentation is in the `docs/` directory:
 git clone https://github.com/zrrbite/forge-compiler.git
 cd forge-compiler
 cargo build --release       # build
-cargo test                  # run 307 tests
+cargo test                  # run 319 tests
 cargo run -- hello.fg       # run a program
 ```
 
