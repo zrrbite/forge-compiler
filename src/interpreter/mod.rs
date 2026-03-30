@@ -361,6 +361,34 @@ impl Interpreter {
         }
     }
 
+    /// Evaluate a program fragment in the REPL. Registers items and executes
+    /// statements in the current scope. Returns the last expression value
+    /// (if any) for auto-printing.
+    pub fn eval_repl(&mut self, program: &Program) -> Result<Option<Value>, RuntimeError> {
+        let mut last_value = None;
+
+        for item in &program.items {
+            match &item.kind {
+                ItemKind::Function(func) => {
+                    if func.name == "main" {
+                        // Wrapped input — run body in current scope (no push/pop)
+                        match self.eval_block_inner(&func.body) {
+                            Outcome::Val(v) => last_value = Some(v),
+                            Outcome::Return(v) => last_value = Some(v),
+                            Outcome::Error(msg) => return Err(RuntimeError(msg)),
+                            _ => {}
+                        }
+                    } else {
+                        self.register_item(item);
+                    }
+                }
+                _ => self.register_item(item),
+            }
+        }
+
+        Ok(last_value)
+    }
+
     fn register_item(&mut self, item: &Item) {
         match &item.kind {
             ItemKind::Function(func) => {
