@@ -577,10 +577,7 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
 
-            HirExprKind::Closure { .. } => {
-                // Closures need function pointers + environment — stub for now.
-                Ok(self.context.i64_type().const_int(0, false).into())
-            }
+            HirExprKind::Closure { params, body } => self.compile_closure(params, body, function),
 
             HirExprKind::Comptime(block) => {
                 // Comptime blocks should be evaluated before codegen.
@@ -725,6 +722,44 @@ impl<'ctx> Codegen<'ctx> {
             }
             if let Some(&llvm_fn) = self.functions.get(name.as_str()) {
                 return self.compile_direct_call(llvm_fn, args, function);
+            }
+
+            // Try indirect call — callee is a variable holding a function pointer.
+            if let Some((ptr, _ty)) = self.lookup_var(name) {
+                let fn_ptr = self
+                    .builder
+                    .build_load(
+                        self.context.ptr_type(AddressSpace::default()),
+                        ptr,
+                        "fn_ptr",
+                    )
+                    .unwrap();
+
+                let mut compiled_args: Vec<BasicMetadataValueEnum> = Vec::new();
+                for arg in args {
+                    compiled_args.push(self.compile_expr(arg, function)?.into());
+                }
+
+                // Build function type for the indirect call (all i64 for now).
+                let param_types: Vec<BasicMetadataTypeEnum> = compiled_args
+                    .iter()
+                    .map(|_| self.context.i64_type().into())
+                    .collect();
+                let fn_type = self.context.i64_type().fn_type(&param_types, false);
+
+                let result = self
+                    .builder
+                    .build_indirect_call(
+                        fn_type,
+                        fn_ptr.into_pointer_value(),
+                        &compiled_args,
+                        "icall",
+                    )
+                    .unwrap();
+                return match result.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(val) => Ok(val),
+                    _ => Ok(self.context.i64_type().const_int(0, false).into()),
+                };
             }
         }
 
@@ -1125,6 +1160,60 @@ impl<'ctx> Codegen<'ctx> {
 
         self.builder.position_at_end(exit_bb);
         Ok(self.context.i64_type().const_int(0, false).into())
+    }
+
+    fn compile_closure(
+        &mut self,
+        params: &[HirClosureParam],
+        body: &HirExpr,
+        parent_fn: FunctionValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        // Generate a unique name for the closure function.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CLOSURE_COUNT: AtomicU64 = AtomicU64::new(0);
+        let id = CLOSURE_COUNT.fetch_add(1, Ordering::Relaxed);
+        let closure_name = format!("__closure_{id}");
+
+        // Save the current builder position.
+        let saved_block = self.builder.get_insert_block();
+
+        // Build the function type: all params are i64 for now.
+        let param_types: Vec<BasicMetadataTypeEnum<'ctx>> = params
+            .iter()
+            .map(|_| self.context.i64_type().into())
+            .collect();
+        let fn_type = self.context.i64_type().fn_type(&param_types, false);
+        let closure_fn = self.module.add_function(&closure_name, fn_type, None);
+
+        // Build the closure body in a new function.
+        let entry = self.context.append_basic_block(closure_fn, "entry");
+        self.builder.position_at_end(entry);
+
+        self.push_scope();
+        for (i, param) in params.iter().enumerate() {
+            let alloca = self
+                .builder
+                .build_alloca(self.context.i64_type(), &param.name)
+                .unwrap();
+            self.builder
+                .build_store(alloca, closure_fn.get_nth_param(i as u32).unwrap())
+                .unwrap();
+            self.define_var(param.name.clone(), alloca, self.context.i64_type().into());
+        }
+
+        let result = self.compile_expr(body, closure_fn)?;
+        self.builder.build_return(Some(&result)).unwrap();
+        self.pop_scope();
+
+        // Restore builder to the parent function.
+        if let Some(block) = saved_block {
+            self.builder.position_at_end(block);
+        }
+
+        // Return the function pointer.
+        // Store it in a variable so it can be loaded as a ptr later.
+        let _ = parent_fn; // suppress warning
+        Ok(closure_fn.as_global_value().as_pointer_value().into())
     }
 
     fn compile_for(
