@@ -107,7 +107,7 @@ fn main() {
     let (tokens, lex_errors) = Lexer::new(&source).tokenize();
     if !lex_errors.is_empty() {
         for err in &lex_errors {
-            eprintln!("{err}");
+            print_source_error(filename, &source, err.span.start, &err.message, "error");
         }
         process::exit(1);
     }
@@ -136,13 +136,13 @@ fn main() {
         } else if !parse_errors.is_empty() {
             // Both failed — show original errors
             for err in &parse_errors {
-                eprintln!("{err}");
+                print_source_error(filename, &source, err.span.start, &err.message, "error");
             }
             process::exit(1);
         }
     } else if !parse_errors.is_empty() {
         for err in &parse_errors {
-            eprintln!("{err}");
+            print_source_error(filename, &source, err.span.start, &err.message, "error");
         }
         process::exit(1);
     }
@@ -150,7 +150,7 @@ fn main() {
     // Resolve modules (use declarations).
     if let Err(errors) = forge::resolve::resolve_modules(&mut program, Path::new(filename)) {
         for err in &errors {
-            eprintln!("{err}");
+            eprintln!("error: {err}");
         }
         process::exit(1);
     }
@@ -382,4 +382,49 @@ fn main() {{
     println!();
     println!("  cd {name}");
     println!("  forge main.fg");
+}
+
+/// Print a source error with line:column and a snippet pointing to the error.
+///
+/// Example output:
+/// ```
+/// error: Expected expression
+///  --> test.fg:3:15
+///   |
+/// 3 |     let x = 42 +
+///   |                 ^
+/// ```
+fn print_source_error(filename: &str, source: &str, byte_offset: usize, message: &str, kind: &str) {
+    // Find line and column from byte offset.
+    let mut line_num = 1;
+    let mut col = 1;
+    let mut line_start = 0;
+    for (i, ch) in source.char_indices() {
+        if i >= byte_offset {
+            break;
+        }
+        if ch == '\n' {
+            line_num += 1;
+            col = 1;
+            line_start = i + 1;
+        } else {
+            col += 1;
+        }
+    }
+
+    // Extract the source line.
+    let line_end = source[line_start..]
+        .find('\n')
+        .map(|p| line_start + p)
+        .unwrap_or(source.len());
+    let source_line = &source[line_start..line_end];
+
+    // Line number gutter width.
+    let gutter = format!("{line_num}").len();
+
+    eprintln!("{kind}: {message}");
+    eprintln!("{:>gutter$}--> {filename}:{line_num}:{col}", " ");
+    eprintln!("{:>gutter$} |", " ");
+    eprintln!("{line_num} | {source_line}");
+    eprintln!("{:>gutter$} | {:>col$}", " ", "^");
 }

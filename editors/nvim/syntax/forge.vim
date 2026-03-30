@@ -48,13 +48,13 @@ syn match forgeOperator "\V?"
 syn match forgeOperator "\V@"
 syn match forgeOperator "\V::"
 
-" Comments
-syn match forgeComment "\V//\.\*$"
+" Comments (must come before strings to take priority on same line)
+syn match forgeComment "//.*$"
 
-" Strings with interpolation
-syn region forgeString start='"' end='"' contains=forgeEscape,forgeInterp
-syn match forgeEscape contained "\v\\[nrt\\\"{}0]"
-syn region forgeInterp contained matchgroup=forgeInterpDelim start="{" end="}" contains=TOP
+" Strings — handle escaped quotes and interpolation
+syn region forgeString start=/"/ skip=/\\"/ end=/"/ contains=forgeEscape,forgeInterp oneline
+syn match forgeEscape contained /\\[nrt\\"{}0]/
+syn region forgeInterp contained matchgroup=forgeInterpDelim start=/{/ end=/}/ contains=forgeFuncCall,forgeNumber,forgeBool,forgeSelf,forgeOperator,forgeKeyword oneline
 
 " Highlighting links
 hi def link forgeKeyword Keyword
